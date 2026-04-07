@@ -1,0 +1,49 @@
+# ============================================================
+#  requirements.txt — VoiceBot Tunisie Telecom
+# ============================================================
+
+# ── STT : Whisper (reconnaissance vocale arabe/darija) ──────
+faster-whisper>=1.0.0
+# Alternative : openai-whisper>=20231117
+
+# ── Audio capture / playback ─────────────────────────────────
+sounddevice>=0.4.6
+soundfile>=0.12.1
+pyaudio>=0.2.14
+numpy>=1.24.0
+
+# ── TTS : Text-to-Speech ─────────────────────────────────────
+gTTS>=2.3.2
+pygame>=2.5.0       # Pour lire les fichiers audio générés
+pyttsx3>=2.90       # TTS hors-ligne (fallback)
+requests>=2.31.0    # Pour ElevenLabs API
+
+# ── Embeddings multilingues ───────────────────────────────────
+sentence-transformers>=2.7.0
+torch>=2.0.0
+transformers>=4.35.0
+
+# ── Recherche vectorielle FAISS ───────────────────────────────
+faiss-cpu>=1.7.4    # Remplacer par faiss-gpu si GPU disponible
+
+# ── Fine-tuning AraBERT (HuggingFace) ────────────────────────
+datasets>=2.14.0    # Pour finetune_intent.py
+# Le modèle: aubmindlab/bert-base-arabertv02
+
+# ── NLP & traitement texte ────────────────────────────────────
+scikit-learn>=1.3.0
+joblib>=1.3.0       # Pour les modèles TF-IDF
+regex>=2023.10.3
+arabic-reshaper>=3.0.0
+python-bidi>=0.4.2
+
+# ── Data ─────────────────────────────────────────────────────
+pandas>=2.0.0
+
+# ── Backend Web ──────────────────────────────────────────────
+flask>=3.0.0
+
+# ── Logging & utilitaires ─────────────────────────────────────
+python-dotenv>=1.0.0
+colorlog>=6.7.0
+tqdm>=4.66.0

@@ -1,0 +1,255 @@
+﻿C:\Users\Yasmine\anaconda3
+\Scripts\conda.exe : 
+2026-04-03 00:32:49,962 
+[INFO] __main__: 
+Chargement modules...
+Au caractère Ligne:1 : 1
++ C:\Users\Yasmine\anacond
+a3\Scripts\conda.exe run 
+-n whisper_env pytho ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo        
+      : NotSpecified: (2  
+  026-04-03 00:3...ment   
+  modules...:String) [    
+], RemoteException
+    + FullyQualifiedError 
+   Id : NativeCommandErr  
+  or
+ 
+
+C:\Users\Yasmine\anaconda3
+\envs\whisper_env\lib\site
+-packages\sklearn\base.py:
+348: InconsistentVersionWa
+rning: Trying to unpickle 
+estimator 
+TfidfTransformer from 
+version 1.7.2 when using 
+version 1.3.2. This might 
+lead to breaking code or 
+invalid results. Use at 
+your own risk. For more 
+info please refer to:
+
+https://scikit-learn.org/s
+table/model_persistence.ht
+ml#security-maintainabilit
+y-limitations
+
+  warnings.warn(
+
+C:\Users\Yasmine\anaconda3
+\envs\whisper_env\lib\site
+-packages\sklearn\base.py:
+348: InconsistentVersionWa
+rning: Trying to unpickle 
+estimator TfidfVectorizer 
+from version 1.7.2 when 
+using version 1.3.2. This 
+might lead to breaking 
+code or invalid results. 
+Use at your own risk. For 
+more info please refer to:
+
+https://scikit-learn.org/s
+table/model_persistence.ht
+ml#security-maintainabilit
+y-limitations
+
+  warnings.warn(
+
+C:\Users\Yasmine\anaconda3
+\envs\whisper_env\lib\site
+-packages\sklearn\base.py:
+348: InconsistentVersionWa
+rning: Trying to unpickle 
+estimator 
+LogisticRegression from 
+version 1.7.2 when using 
+version 1.3.2. This might 
+lead to breaking code or 
+invalid results. Use at 
+your own risk. For more 
+info please refer to:
+
+https://scikit-learn.org/s
+table/model_persistence.ht
+ml#security-maintainabilit
+y-limitations
+
+  warnings.warn(
+
+2026-04-03 00:32:50,778 
+[INFO] 
+modules.ml_predictor: 
+\u2705 ModÞles TF-IDF 
+chargÚs depuis 'C:\Users\Y
+asmine\Desktop\PFE\pfe\PFE
+\models'
+
+2026-04-03 00:32:50,781 
+[INFO] modules.nlu: NLU 
+\u2192 Mode ML actif 
+(modÞles ML.ipynb 
+chargÚs).
+
+Traceback (most recent 
+call last):
+
+  File "C:\Users\Yasmine\D
+esktop\PFE\pfe\PFE\modules
+\response_engine.py", 
+line 59, in 
+_load_embedding_model
+
+    from 
+sentence_transformers 
+import SentenceTransformer
+
+  File "C:\Users\Yasmine\a
+naconda3\envs\whisper_env\
+lib\site-packages\sentence
+_transformers\__init__.py"
+, line 10, in <module>
+
+    from sentence_transfor
+mers.backend import (
+
+  File "C:\Users\Yasmine\a
+naconda3\envs\whisper_env\
+lib\site-packages\sentence
+_transformers\backend\__in
+it__.py", line 3, in 
+<module>
+
+    from .load import 
+load_onnx_model, 
+load_openvino_model
+
+  File "C:\Users\Yasmine\a
+naconda3\envs\whisper_env\
+lib\site-packages\sentence
+_transformers\backend\load
+.py", line 7, in <module>
+
+    from transformers.conf
+iguration_utils import 
+PretrainedConfig
+
+  File "C:\Users\Yasmine\a
+naconda3\envs\whisper_env\
+lib\site-packages\transfor
+mers\configuration_utils.p
+y", line 32, in <module>
+
+    from .generation.confi
+guration_utils import 
+GenerationConfig
+
+  File "C:\Users\Yasmine\a
+naconda3\envs\whisper_env\
+lib\site-packages\transfor
+mers\generation\configurat
+ion_utils.py", line 62, 
+in <module>
+
+    from .logits_process 
+import SynthIDTextWatermar
+kLogitsProcessor, 
+WatermarkLogitsProcessor
+
+  File "C:\Users\Yasmine\a
+naconda3\envs\whisper_env\
+lib\site-packages\transfor
+mers\generation\logits_pro
+cess.py", line 21, in 
+<module>
+
+    import torch
+
+  File "C:\Users\Yasmine\a
+naconda3\envs\whisper_env\
+lib\site-packages\torch\__
+init__.py", line 280, in 
+<module>
+
+    _load_dll_libraries()
+
+  File "C:\Users\Yasmine\a
+naconda3\envs\whisper_env\
+lib\site-packages\torch\__
+init__.py", line 263, in 
+_load_dll_libraries
+
+    raise err
+
+OSError: [WinError 1114] 
+Une routine 
+dÆinitialisation dÆune 
+bibliothÞque de liens 
+dynamiques (DLL) a 
+ÚchouÚ. Error loading "C:\
+Users\Yasmine\anaconda3\en
+vs\whisper_env\lib\site-pa
+ckages\torch\lib\c10.dll" 
+or one of its 
+dependencies.
+
+
+
+During handling of the 
+above exception, another 
+exception occurred:
+
+
+
+Traceback (most recent 
+call last):
+
+  File "C:\Users\Yasmine\D
+esktop\PFE\pfe\PFE\app.py"
+, line 38, in <module>
+
+    response_eng   = 
+ResponseEngine(Config)
+
+  File "C:\Users\Yasmine\D
+esktop\PFE\pfe\PFE\modules
+\response_engine.py", 
+line 51, in __init__
+
+    self._load_embedding_m
+odel()
+
+  File "C:\Users\Yasmine\D
+esktop\PFE\pfe\PFE\modules
+\response_engine.py", 
+line 66, in 
+_load_embedding_model
+
+    raise 
+RuntimeError(f"Erreur 
+chargement embedding: 
+{e}")
+
+RuntimeError: Erreur 
+chargement embedding: 
+[WinError 1114] Une 
+routine dÆinitialisation 
+dÆune bibliothÞque de 
+liens dynamiques (DLL) a 
+ÚchouÚ. Error loading "C:\
+Users\Yasmine\anaconda3\en
+vs\whisper_env\lib\site-pa
+ckages\torch\lib\c10.dll" 
+or one of its 
+dependencies.
+
+
+ERROR conda.cli.main_run:e
+xecute(49): `conda run 
+python app.py` failed. 
+(See above for error)

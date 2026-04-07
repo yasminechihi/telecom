@@ -1,0 +1,431 @@
+<!DOCTYPE html>
+<html lang="fr" dir="ltr">
+<head>
+<meta charset="UTF-8">
+<title>Architecture VoiceBot — Tunisie Telecom</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Segoe UI', Arial, sans-serif; background: #0f1117; color: #e0e0e0; padding: 30px; line-height: 1.6; }
+  h1 { text-align: center; color: #4fc3f7; font-size: 2em; margin-bottom: 6px; }
+  h2 { color: #81d4fa; font-size: 1.3em; margin: 28px 0 12px; border-left: 4px solid #4fc3f7; padding-left: 12px; }
+  h3 { color: #b3e5fc; font-size: 1.05em; margin: 14px 0 6px; }
+  .subtitle { text-align: center; color: #90a4ae; margin-bottom: 30px; font-size: 0.95em; }
+
+  /* Pipeline global */
+  .pipeline { display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: 0; margin: 24px 0; }
+  .pipe-box { background: #1e2a38; border: 2px solid #4fc3f7; border-radius: 10px; padding: 16px 20px; text-align: center; min-width: 130px; }
+  .pipe-box .icon { font-size: 2em; }
+  .pipe-box .label { font-weight: bold; color: #4fc3f7; font-size: 0.95em; margin-top: 4px; }
+  .pipe-box .tech { font-size: 0.75em; color: #90a4ae; margin-top: 2px; }
+  .pipe-arrow { font-size: 1.8em; color: #4fc3f7; padding: 0 6px; }
+
+  /* Modules grid */
+  .modules-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 18px; margin: 18px 0; }
+  .module-card { background: #1a2332; border-radius: 10px; border: 1px solid #2a3f5f; padding: 18px; }
+  .module-card h3 { color: #4fc3f7; margin-bottom: 8px; display: flex; align-items: center; gap: 8px; }
+  .module-card p { font-size: 0.88em; color: #b0bec5; margin-bottom: 6px; }
+  .tag { display: inline-block; background: #0d3349; color: #4fc3f7; border-radius: 4px; font-size: 0.72em; padding: 2px 7px; margin: 2px; }
+  .tag.green { background: #0d3323; color: #81c784; }
+  .tag.orange { background: #3e2300; color: #ffb74d; }
+  .tag.purple { background: #2a1550; color: #ce93d8; }
+
+  /* Flow diagram */
+  .flow { background: #111820; border-radius: 10px; padding: 20px; margin: 18px 0; font-family: monospace; font-size: 0.82em; color: #b0bec5; overflow-x: auto; white-space: pre; border: 1px solid #2a3f5f; }
+
+  /* Tables */
+  table { width: 100%; border-collapse: collapse; margin: 14px 0; font-size: 0.85em; }
+  th { background: #1a3a5c; color: #4fc3f7; padding: 10px 14px; text-align: left; }
+  td { padding: 8px 14px; border-bottom: 1px solid #1e2a38; }
+  tr:hover td { background: #1a2332; }
+
+  /* Models section */
+  .models-list { display: flex; flex-wrap: wrap; gap: 10px; margin: 10px 0; }
+  .model-item { background: #1a2332; border: 1px solid #2a3f5f; border-radius: 8px; padding: 10px 14px; font-size: 0.82em; min-width: 200px; }
+  .model-item .mname { color: #4fc3f7; font-weight: bold; }
+  .model-item .mtype { color: #90a4ae; font-size: 0.85em; }
+
+  /* Dialogue flow */
+  .dialogue { background: #0d1f0d; border: 1px solid #1b5e20; border-radius: 10px; padding: 18px; margin: 14px 0; }
+  .turn { margin: 8px 0; }
+  .turn.user { color: #a5d6a7; }
+  .turn.user::before { content: "🧑 Client: "; font-weight: bold; }
+  .turn.bot { color: #81d4fa; }
+  .turn.bot::before { content: "🤖 Bot:    "; font-weight: bold; }
+  .turn.sys { color: #ffb74d; font-size: 0.8em; }
+  .turn.sys::before { content: "⚙️  Système: "; }
+
+  /* Confidence section */
+  .conf-bar { height: 10px; border-radius: 5px; margin: 4px 0; }
+
+  footer { text-align: center; color: #546e7a; font-size: 0.8em; margin-top: 40px; border-top: 1px solid #1e2a38; padding-top: 16px; }
+</style>
+</head>
+<body>
+
+<h1>🏢 Architecture VoiceBot — Tunisie Telecom</h1>
+<p class="subtitle">Centre d'appel virtuel intelligent — Darija tunisien | PFE 2026</p>
+
+<!-- ═══════════════════════════════════════════════════════════ -->
+<h2>1. Vue d'ensemble du pipeline</h2>
+
+<div class="pipeline">
+  <div class="pipe-box">
+    <div class="icon">🎙️</div>
+    <div class="label">STT</div>
+    <div class="tech">Faster-Whisper<br>medium/ar</div>
+  </div>
+  <div class="pipe-arrow">→</div>
+  <div class="pipe-box">
+    <div class="icon">🧠</div>
+    <div class="label">NLU</div>
+    <div class="tech">TF-IDF + LogReg<br>ou AraBERT</div>
+  </div>
+  <div class="pipe-arrow">→</div>
+  <div class="pipe-box">
+    <div class="icon">🔍</div>
+    <div class="label">RAG</div>
+    <div class="tech">FAISS + MiniLM<br>6 687 conv.</div>
+  </div>
+  <div class="pipe-arrow">→</div>
+  <div class="pipe-box">
+    <div class="icon">🔊</div>
+    <div class="label">TTS</div>
+    <div class="tech">edge-tts<br>ar-TN-ReemNeural</div>
+  </div>
+</div>
+
+<div style="display:flex; justify-content:center; gap:30px; flex-wrap:wrap; margin: 0 0 18px 0; font-size:0.82em; color:#90a4ae;">
+  <span>⬆️ Backend : <strong style="color:#4fc3f7">Flask REST API</strong></span>
+  <span>🌐 Frontend : <strong style="color:#4fc3f7">HTML/JS (index.html)</strong></span>
+  <span>📦 Dataset : <strong style="color:#4fc3f7">6 687 conversations JSONL</strong></span>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════ -->
+<h2>2. Flux de dialogue — 2 étapes</h2>
+
+<div class="flow">
+  ┌─────────────────────────────────────────────────────────────────────────┐
+  │                   DIALOGUE EN 2 ÉTAPES (fidèle au dataset)             │
+  │                                                                         │
+  │  Étape 0 ─ Salutation                                                   │
+  │  User: "عسلامة"          →  Bot: "مرحبا بيك في تليكوم تونس!..."         │
+  │                                                                         │
+  │  Étape 1 ─ Problème Initial                                             │
+  │  User: "الريزو طايح"      →  NLU → FAISS problem_index                  │
+  │                              Bot pose une QUESTION de clarification      │
+  │                              "أنت في أي منطقة؟"                         │
+  │                                                                         │
+  │  Étape 2 ─ Réponse à Clarification                                      │
+  │  User: "صفاقس"           →  [problème original + réponse] →             │
+  │                              FAISS index principal → RÉPONSE FINALE      │
+  │                              Bot: "فما أشغال صيانة في صفاقس..."          │
+  │                                                                         │
+  │  Étape 3 ─ Remerciement                                                 │
+  │  User: "شكرن"            →  Bot: "يسعدنا خدمتك! يوم سعيد! 🌟"           │
+  │                                                                         │
+  │  En cas de faible confiance RAG < 0.30                                  │
+  │                              → Transfert vers agent humain               │
+  │                              → Ticket créé (human_queue.jsonl)           │
+  │                              → Réponse apprise (learning.py)             │
+  └─────────────────────────────────────────────────────────────────────────┘
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════ -->
+<h2>3. Modules détaillés</h2>
+
+<div class="modules-grid">
+
+  <div class="module-card">
+    <h3>🎙️ STT — modules/stt.py</h3>
+    <p><strong>Rôle :</strong> Transcription parole → texte arabe/darija</p>
+    <p><strong>Technologie :</strong> <code>faster-whisper</code> (modèle <em>medium</em>)</p>
+    <p><strong>Langue :</strong> Arabe (couvre darija tunisien + français mélangé)</p>
+    <p><strong>Audio :</strong> sounddevice, 16 000 Hz, VAD optionnel</p>
+    <p><strong>Prompt initial :</strong> "مرحبا تليكوم تونس، عندي مشكلة في الخدمة"</p>
+    <br>
+    <span class="tag">faster-whisper</span>
+    <span class="tag">sounddevice</span>
+    <span class="tag orange">CPU / GPU</span>
+  </div>
+
+  <div class="module-card">
+    <h3>🧠 NLU — modules/nlu.py</h3>
+    <p><strong>Rôle :</strong> Détection d'intention + entités + sentiment</p>
+    <p><strong>Stratégie hybride (priorité) :</strong></p>
+    <p>① MLPredictor (TF-IDF ou AraBERT) → intent, service, wilaya, action</p>
+    <p>② Fallback règles regex → 14 intents couverts</p>
+    <p><strong>Entités extraites :</strong> wilaya, délégation, téléphone, transaction ID</p>
+    <p><strong>Correction localisation :</strong> override ML si délégation explicite dans le texte</p>
+    <br>
+    <span class="tag">regex multilingue</span>
+    <span class="tag green">darija + français</span>
+    <span class="tag purple">14 intents</span>
+  </div>
+
+  <div class="module-card">
+    <h3>🤖 MLPredictor — modules/ml_predictor.py</h3>
+    <p><strong>Rôle :</strong> Prédictions ML sur le texte</p>
+    <p><strong>Backend 1 (prioritaire) :</strong> AraBERT fine-tuné (HuggingFace Transformers)</p>
+    <p><strong>Backend 2 (fallback) :</strong> 8 modèles TF-IDF + LogisticRegression (ML.ipynb)</p>
+    <p><strong>Prédit :</strong> issue_type, sentiment, service, wilaya, délégation, action, réponse ML</p>
+    <p><strong>Moteur de décision :</strong> seuil sentiment + issue critique → escalade ou auto</p>
+    <br>
+    <span class="tag">AraBERT</span>
+    <span class="tag orange">TF-IDF fallback</span>
+    <span class="tag green">LogisticRegression</span>
+  </div>
+
+  <div class="module-card">
+    <h3>🔍 RAG — modules/response_engine.py</h3>
+    <p><strong>Rôle :</strong> Récupération de réponse par similarité sémantique</p>
+    <p><strong>Embedding :</strong> paraphrase-multilingual-MiniLM-L12-v2 (384 dim)</p>
+    <p><strong>Index :</strong> FAISS IndexFlatIP (cosine sur vecteurs normalisés)</p>
+    <p><strong>Encodage enrichi (v2) :</strong> chaque vecteur inclut <code>issue_type + user_problem + user_answer</code> → meilleure séparation par catégorie de problème</p>
+    <p><strong>Requête enrichie (v2) :</strong> l'intent NLU est préfixé dans la requête d'embedding (étapes 1 et 2) → FAISS trouve le bon voisin même avec dialectal tunisien</p>
+    <p><strong>2 index :</strong> problem_index (étape 1) + index principal (étape 2)</p>
+    <p><strong>Filtrage :</strong> PASS1 (intent) → PASS2 (global) + bonus localisation +0.18</p>
+    <p><strong>Personnalisation :</strong> substitution automatique de la localisation dans la réponse</p>
+    <br>
+    <span class="tag">FAISS</span>
+    <span class="tag">sentence-transformers</span>
+    <span class="tag orange">6 687 conversations</span>
+  </div>
+
+  <div class="module-card">
+    <h3>🔊 TTS — via app.py (/api/tts) — <span style="color:#81c784">v2</span></h3>
+    <p><strong>Rôle :</strong> Synthèse vocale arabe de la réponse bot</p>
+    <p><strong>🆕 Priorité 1 : edge-tts</strong> — Microsoft Neural TTS, <strong>gratuit, sans clé API</strong>. Voix neurale tunisienne <code>ar-TN-ReemNeural</code> (femme) ou <code>ar-TN-HediNeural</code> (homme). Qualité Azure Cognitive Services. Rendu très naturel et humain.</p>
+    <p><strong>Priorité 2 :</strong> ElevenLabs API (si clé configurée) — voix Josh, eleven_multilingual_v2</p>
+    <p><strong>Priorité 3 :</strong> gTTS (Google TTS, gratuit, lang=ar) → fallback final</p>
+    <p><strong>Navigateur :</strong> Web Speech API en dernier recours (client-side)</p>
+    <br>
+    <span class="tag green">edge-tts ar-TN-ReemNeural 🆕</span>
+    <span class="tag purple">ElevenLabs</span>
+    <span class="tag orange">gTTS fallback</span>
+  </div>
+
+  <div class="module-card">
+    <h3>🗣️ DialogManager — modules/dialog_manager.py</h3>
+    <p><strong>Rôle :</strong> Orchestration du flux de dialogue vocal</p>
+    <p><strong>Mode vocal :</strong> boucle STT → NLU → RAG → TTS</p>
+    <p><strong>Gère :</strong> états du dialogue, tour max (20), transfert humain</p>
+    <p><strong>États :</strong> waiting_greeting → initial → clarifying → responding</p>
+    <br>
+    <span class="tag">State machine</span>
+    <span class="tag orange">20 tours max</span>
+  </div>
+
+  <div class="module-card">
+    <h3>🤝 HumanTransfer — modules/human_transfer.py</h3>
+    <p><strong>Rôle :</strong> Escalade vers agent humain si confiance trop basse</p>
+    <p><strong>Déclenché si :</strong> RAG conf &lt; seuil ET intent inconnu ET ≥ 2 tentatives</p>
+    <p><strong>Ticket :</strong> résumé conversation + intent + priorité → human_queue.jsonl</p>
+    <p><strong>API :</strong> /api/human_response pour résoudre + apprendre</p>
+    <br>
+    <span class="tag orange">Escalade</span>
+    <span class="tag">Ticket JSONL</span>
+  </div>
+
+  <div class="module-card">
+    <h3>📚 Learning — modules/learning.py</h3>
+    <p><strong>Rôle :</strong> Apprentissage continu depuis les réponses humaines</p>
+    <p><strong>Stockage :</strong> learned_interactions.jsonl (même format que dataset)</p>
+    <p><strong>Auto-retrain :</strong> après 50 nouvelles interactions → rebuild FAISS</p>
+    <p><strong>Intégration :</strong> index rechargé dynamiquement via reload_index()</p>
+    <br>
+    <span class="tag green">Apprentissage continu</span>
+    <span class="tag">Seuil: 50 interact.</span>
+  </div>
+
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════ -->
+<h2>4. Modèles ML (.pkl) — ML.ipynb</h2>
+
+<div class="models-list">
+  <div class="model-item"><div class="mname">tfidf_issue.pkl + model_issue.pkl</div><div class="mtype">TF-IDF + LogReg → type de réclamation (14 classes)</div></div>
+  <div class="model-item"><div class="mname">tfidf_sentiment.pkl + model_sentiment.pkl</div><div class="mtype">TF-IDF + LogReg → sentiment (positif/négatif/neutre)</div></div>
+  <div class="model-item"><div class="mname">tfidf_service.pkl + model_service.pkl</div><div class="mtype">TF-IDF + LogReg → type de service (Mobile, ADSL, Fibre…)</div></div>
+  <div class="model-item"><div class="mname">tfidf_geo.pkl + model_wilaya.pkl</div><div class="mtype">TF-IDF + LogReg → gouvernorat tunisien (24 classes)</div></div>
+  <div class="model-item"><div class="mname">model_delegation.pkl</div><div class="mtype">LogReg → délégation / ville</div></div>
+  <div class="model-item"><div class="mname">tfidf_action.pkl + model_action.pkl</div><div class="mtype">TF-IDF + LogReg → action recommandée</div></div>
+  <div class="model-item"><div class="mname">model_response.pkl</div><div class="mtype">LogReg → réponse directe ML (alternative RAG)</div></div>
+  <div class="model-item"><div class="mname">faiss_index.bin + dataset_cache.pkl</div><div class="mtype">Index vectoriel FAISS + cache dataset parsé</div></div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════ -->
+<h2>5. Technologies et dépendances</h2>
+
+<table>
+  <tr><th>Composant</th><th>Technologie</th><th>Version</th><th>Rôle</th></tr>
+  <tr><td>STT</td><td>faster-whisper</td><td>≥1.0.0</td><td>Transcription arabe/darija</td></tr>
+  <tr><td>Embeddings</td><td>sentence-transformers (MiniLM)</td><td>≥2.7.0</td><td>Encodage sémantique multilingue</td></tr>
+  <tr><td>Recherche vectorielle</td><td>FAISS (faiss-cpu)</td><td>≥1.7.4</td><td>Similarité cosine sur 6 687 vecteurs</td></tr>
+  <tr><td>ML NLU</td><td>scikit-learn + joblib</td><td>≥1.3.0</td><td>TF-IDF + LogisticRegression</td></tr>
+  <tr><td>NLP Arabe</td><td>arabic-reshaper + python-bidi</td><td>latest</td><td>Normalisation texte arabe</td></tr>
+  <tr><td>TTS primaire 🆕</td><td>edge-tts (Microsoft Neural)</td><td>≥6.1.9</td><td>Voix ar-TN-ReemNeural (tunisienne), gratuit, sans clé API</td></tr>
+  <tr><td>TTS secondaire</td><td>ElevenLabs API</td><td>REST v1</td><td>Voix masculine Josh (eleven_multilingual_v2), si clé configurée</td></tr>
+  <tr><td>TTS fallback</td><td>gTTS</td><td>≥2.3.2</td><td>Google TTS, gratuit, lang=ar</td></tr>
+  <tr><td>Deep Learning</td><td>PyTorch + Transformers</td><td>≥2.0 / ≥4.35</td><td>AraBERT fine-tuné (optionnel)</td></tr>
+  <tr><td>Audio</td><td>sounddevice + soundfile</td><td>latest</td><td>Capture micro + lecture audio</td></tr>
+  <tr><td>Backend Web</td><td>Flask</td><td>≥3.0.0</td><td>REST API + interface HTML</td></tr>
+  <tr><td>Logging</td><td>colorlog</td><td>≥6.7.0</td><td>Logs colorés console + fichier</td></tr>
+  <tr><td>Dataset</td><td>JSONL</td><td>—</td><td>6 687 conversations darija tunisien</td></tr>
+</table>
+
+<!-- ═══════════════════════════════════════════════════════════ -->
+<h2>6. Architecture des fichiers</h2>
+
+<div class="flow">PFE/
+└── pfe/
+    └── PFE/                              ← Dossier principal du voicebot
+        ├── app.py                        ← 🌐 Serveur Flask (interface web)
+        ├── voicebot_main.py              ← 🎙️ Mode vocal (ligne de commande)
+        ├── config.py                     ← ⚙️  Configuration centrale (seuils, clés API)
+        ├── requirements.txt              ← 📦 Dépendances Python
+        ├── PIPELINE.md                   ← 📖 Documentation pipeline
+        ├── LANCER_VOICEBOT.bat           ← 🚀 Script de lancement Windows
+        │
+        ├── modules/                      ← 🔧 Modules métier
+        │   ├── stt.py                    ← Whisper Speech-to-Text
+        │   ├── tts.py                    ← gTTS Text-to-Speech
+        │   ├── nlu.py                    ← NLU hybride (ML + regex)
+        │   ├── ml_predictor.py           ← AraBERT / TF-IDF wrapper
+        │   ├── response_engine.py        ← RAG FAISS (cœur du bot)
+        │   ├── dialog_manager.py         ← Orchestrateur vocal
+        │   ├── human_transfer.py         ← Escalade agent humain
+        │   ├── learning.py               ← Apprentissage continu
+        │   └── clarification.py          ← Questions de clarification
+        │
+        ├── utils/
+        │   ├── audio_utils.py            ← Enregistrement audio
+        │   └── text_utils.py             ← Normalisation darija
+        │
+        ├── models/                       ← Modèles générés
+        │   ├── faiss_index.bin           ← Index vectoriel FAISS
+        │   ├── dataset_cache.pkl         ← Cache parsé du dataset
+        │   ├── model_issue.pkl           ← Réclamation (14 classes)
+        │   ├── model_sentiment.pkl       ← Sentiment
+        │   ├── model_service.pkl         ← Service telecom
+        │   ├── model_wilaya.pkl          ← Gouvernorat (24)
+        │   ├── model_delegation.pkl      ← Délégation
+        │   ├── model_action.pkl          ← Action recommandée
+        │   ├── model_response.pkl        ← Réponse ML directe
+        │   ├── tfidf_issue.pkl           ← Vectoriseur TF-IDF issue
+        │   ├── tfidf_sentiment.pkl       ← Vectoriseur TF-IDF sentiment
+        │   ├── tfidf_service.pkl         ← Vectoriseur TF-IDF service
+        │   ├── tfidf_geo.pkl             ← Vectoriseur TF-IDF géo
+        │   └── tfidf_action.pkl          ← Vectoriseur TF-IDF action
+        │
+        ├── templates/
+        │   └── index.html                ← 🌐 Interface web voicebot
+        │
+        ├── data/
+        │   └── human_queue.jsonl         ← File d'attente agents humains
+        │
+        ├── logs/
+        │   ├── voicebot.log              ← Log technique
+        │   └── conversations.jsonl       ← Historique sessions
+        │
+        └── dataset_final_nlp_v2_corrected.jsonl  ← 📊 Dataset 6 687 conv.
+    │
+    ├── ML/
+    │   └── ML.ipynb                      ← 🔬 Entraînement modèles TF-IDF
+    ├── bigdata/                          ← 🐘 Phase Big Data (Hadoop)
+    ├── etl/                              ← 🔄 Phase ETL (SQL)
+    └── data/                             ← 📁 Données brutes (7000 JSON)
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════ -->
+<h2>7. Paramètres clés (config.py)</h2>
+
+<table>
+  <tr><th>Paramètre</th><th>Valeur</th><th>Description</th></tr>
+  <tr><td>STT_MODEL</td><td>medium</td><td>Taille Whisper (tiny→large-v3)</td></tr>
+  <tr><td>EMBEDDING_MODEL</td><td>paraphrase-multilingual-MiniLM-L12-v2</td><td>Modèle d'embedding RAG</td></tr>
+  <tr><td>RAG_CONFIDENCE_THRESHOLD</td><td><s>0.55</s> → <strong>0.30</strong> 🆕</td><td>Seuil min confiance RAG (abaissé — index enrichi plus fiable)</td></tr>
+  <tr><td>RAG_EXACT_THRESHOLD</td><td>0.80</td><td>Seuil réponse directe</td></tr>
+  <tr><td>RAG_TOP_K</td><td>5 (K_search = 40)</td><td>Candidats récupérés par FAISS</td></tr>
+  <tr><td>ESCALATION_ATTEMPTS</td><td>2</td><td>Essais avant transfert humain</td></tr>
+  <tr><td>RETRAIN_THRESHOLD</td><td>50</td><td>Interactions pour auto-retrain FAISS</td></tr>
+  <tr><td>MAX_TURNS</td><td>20</td><td>Tours max par conversation</td></tr>
+  <tr><td>STT_SILENCE_TIMEOUT</td><td>2.0s</td><td>Silence pour fin d'écoute</td></tr>
+  <tr><td>ELEVENLABS_VOICE_ID</td><td>TxGEqnHWrfWFTfGW9XjX (Josh)</td><td>Voix masculine multilingue</td></tr>
+  <tr><td>ELEVENLABS_MODEL</td><td>eleven_multilingual_v2</td><td>Modèle TTS ElevenLabs</td></tr>
+</table>
+
+<!-- ═══════════════════════════════════════════════════════════ -->
+<h2>8. API REST Flask (/api/*)</h2>
+
+<table>
+  <tr><th>Endpoint</th><th>Méthode</th><th>Rôle</th></tr>
+  <tr><td>/</td><td>GET</td><td>Interface web (index.html)</td></tr>
+  <tr><td>/api/new_session</td><td>POST</td><td>Créer une nouvelle session (retourne session_id)</td></tr>
+  <tr><td>/api/chat</td><td>POST</td><td>Envoyer un message texte → réponse bot</td></tr>
+  <tr><td>/api/voice</td><td>POST</td><td>Envoyer audio (webm/wav) → STT → réponse bot</td></tr>
+  <tr><td>/api/tts</td><td>POST</td><td>Synthétiser texte → audio MP3 (ElevenLabs ou gTTS)</td></tr>
+  <tr><td>/api/human_response</td><td>POST</td><td>Résoudre ticket + apprendre</td></tr>
+  <tr><td>/api/stats</td><td>GET</td><td>Stats (ML, Whisper, dataset, sessions)</td></tr>
+  <tr><td>/api/tickets</td><td>GET</td><td>Tickets en attente agents humains</td></tr>
+</table>
+
+<!-- ═══════════════════════════════════════════════════════════ -->
+<h2>9. Lancement du voicebot</h2>
+
+<div class="dialogue">
+  <div style="color:#ffb74d; font-weight:bold; margin-bottom:12px;">▶ Option 1 — Double-clic sur LANCER_VOICEBOT.bat (Windows)</div>
+  <div style="font-family:monospace; font-size:0.85em; color:#b0bec5;">
+    Le script installe automatiquement les dépendances si nécessaire,<br>
+    lance Flask, et ouvre http://localhost:5000 dans le navigateur.
+  </div>
+</div>
+
+<div class="dialogue">
+  <div style="color:#ffb74d; font-weight:bold; margin-bottom:12px;">▶ Option 2 — Ligne de commande manuelle</div>
+  <div style="font-family:monospace; font-size:0.85em; color:#a5d6a7;">
+    cd pfe/PFE/<br>
+    pip install -r requirements.txt<br>
+    python app.py<br>
+    <br>
+    <span style="color:#90a4ae;"># Puis ouvrir : http://localhost:5000</span>
+  </div>
+</div>
+
+<div class="dialogue">
+  <div style="color:#ffb74d; font-weight:bold; margin-bottom:12px;">▶ Option 3 — Mode vocal (micro)</div>
+  <div style="font-family:monospace; font-size:0.85em; color:#a5d6a7;">
+    python voicebot_main.py                 <span style="color:#90a4ae;"># Mode vocal complet</span><br>
+    python voicebot_main.py --text          <span style="color:#90a4ae;"># Mode texte (debug)</span><br>
+    python voicebot_main.py --build-index   <span style="color:#90a4ae;"># Reconstruire FAISS</span><br>
+    python voicebot_main.py --stats         <span style="color:#90a4ae;"># Statistiques</span>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════ -->
+<h2>10. Exemple de conversation</h2>
+
+<div class="dialogue">
+  <div class="turn user">عسلامة</div>
+  <div class="turn sys">Étape 0 — salutation détectée → réponse de bienvenue</div>
+  <div class="turn bot">مرحبا بيك في تليكوم تونس! أنا المساعد الآلي، كيفاش نجم نعاونك اليوم؟</div>
+  <br>
+  <div class="turn user">الريزو عندي طايح من الصباح في صفاقس</div>
+  <div class="turn sys">Étape 1 — NLU: intent=عطل في الشبكه | FAISS problem_index → question clarification</div>
+  <div class="turn bot">وقتاش بالضبط بداء المشكل؟ وهل فما عطل عام في المنطقة؟</div>
+  <br>
+  <div class="turn user">من الصباح الباكر، وجاري ما عندوش ريزو كذلك</div>
+  <div class="turn sys">Étape 2 — [problème original + réponse] → FAISS index principal → score=0.82 → réponse + personnalisation صفاقس</div>
+  <div class="turn bot">سامحنا خويا، فما أشغال صيانة في صفاقس، متوقع يرجع قبل العشية إن شاء الله</div>
+  <br>
+  <div class="turn user">شكرن</div>
+  <div class="turn sys">Remerciement → clôture session</div>
+  <div class="turn bot">يسعدنا خدمتك! 😊 يوم سعيد وربي يحفظك! 🌟</div>
+</div>
+
+<footer>
+  VoiceBot Tunisie Telecom — PFE 2026 | Architecture générée automatiquement
+  <br>Stack: Flask · Whisper · FAISS · MiniLM · TF-IDF · AraBERT · ElevenLabs · gTTS
+</footer>
+
+</body>
+</html>

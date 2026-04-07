@@ -1,0 +1,1132 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Tunisie Telecom — Agent Virtuel Intelligent</title>
+
+  <!-- Fonts -->
+  <link href="https://fonts.googleapis.com/css2?family=Cairo:wght@300;400;600;700;900&family=Inter:wght@300;400;600;700&display=swap" rel="stylesheet"/>
+  <!-- Icons -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css"/>
+
+<style>
+/* ══════════════════════════════════════════════════════
+   VARIABLES & RESET
+══════════════════════════════════════════════════════ */
+:root {
+  --tt-red:      #E8002D;
+  --tt-dark-red: #B0001F;
+  --tt-dark:     #1a1a2e;
+  --tt-darker:   #0f0f1a;
+  --tt-card:     #16213e;
+  --tt-border:   rgba(232,0,45,0.25);
+  --tt-glass:    rgba(22,33,62,0.85);
+  --bot-bubble:  #1e3a5f;
+  --user-bubble: #E8002D;
+  --text-main:   #f0f4ff;
+  --text-muted:  #8892b0;
+  --success:     #00d97e;
+  --warning:     #ffc107;
+  --info:        #3b82f6;
+  --transfer:    #f59e0b;
+  --shadow:      0 8px 32px rgba(0,0,0,0.4);
+}
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+html { scroll-behavior: smooth; }
+body {
+  font-family: 'Cairo', sans-serif;
+  background: var(--tt-darker);
+  color: var(--text-main);
+  min-height: 100vh;
+  overflow-x: hidden;
+}
+
+/* ══════════════════════════════════════════════════════
+   BACKGROUND
+══════════════════════════════════════════════════════ */
+body::before {
+  content: '';
+  position: fixed; inset: 0; z-index: -1;
+  background:
+    radial-gradient(ellipse at 10% 20%, rgba(232,0,45,0.08) 0%, transparent 50%),
+    radial-gradient(ellipse at 90% 80%, rgba(59,130,246,0.06) 0%, transparent 50%),
+    linear-gradient(135deg, #0f0f1a 0%, #1a1a2e 100%);
+}
+
+/* ══════════════════════════════════════════════════════
+   HEADER
+══════════════════════════════════════════════════════ */
+header {
+  background: linear-gradient(135deg, var(--tt-dark-red) 0%, var(--tt-red) 60%, #ff4d6d 100%);
+  padding: 0 2rem;
+  height: 72px;
+  display: flex; align-items: center; justify-content: space-between;
+  box-shadow: 0 4px 24px rgba(232,0,45,0.4);
+  position: sticky; top: 0; z-index: 100;
+}
+.header-brand { display: flex; align-items: center; gap: 14px; }
+.header-logo {
+  width: 48px; height: 48px; border-radius: 12px;
+  background: white;
+  display: flex; align-items: center; justify-content: center;
+  font-weight: 900; font-size: 18px; color: var(--tt-red);
+  letter-spacing: -1px; font-family: 'Inter', sans-serif;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.3);
+}
+.header-title { line-height: 1.2; }
+.header-title h1 { font-size: 1.2rem; font-weight: 700; color: white; }
+.header-title p  { font-size: 0.78rem; color: rgba(255,255,255,0.75); }
+.header-badges { display: flex; gap: 8px; align-items: center; }
+.badge {
+  padding: 4px 12px; border-radius: 20px; font-size: 0.72rem;
+  font-weight: 600; display: flex; align-items: center; gap: 5px;
+  font-family: 'Inter', sans-serif;
+}
+.badge-ml  { background: rgba(0,217,126,0.15); color: #00d97e; border: 1px solid rgba(0,217,126,0.3); }
+.badge-rag { background: rgba(59,130,246,0.15); color: #60a5fa; border: 1px solid rgba(59,130,246,0.3); }
+.badge-dot { width: 7px; height: 7px; border-radius: 50%; animation: pulse-dot 1.5s infinite; }
+.badge-dot.green { background: #00d97e; }
+.badge-dot.blue  { background: #60a5fa; }
+@keyframes pulse-dot {
+  0%,100% { opacity: 1; transform: scale(1); }
+  50%      { opacity: 0.5; transform: scale(0.8); }
+}
+
+/* ══════════════════════════════════════════════════════
+   MAIN LAYOUT
+══════════════════════════════════════════════════════ */
+.main-container {
+  display: grid;
+  grid-template-columns: 1fr 340px;
+  gap: 20px;
+  padding: 20px;
+  max-width: 1400px;
+  margin: 0 auto;
+  height: calc(100vh - 72px);
+}
+
+/* ══════════════════════════════════════════════════════
+   CHAT PANEL
+══════════════════════════════════════════════════════ */
+.chat-panel {
+  background: var(--tt-glass);
+  border: 1px solid var(--tt-border);
+  border-radius: 20px;
+  display: flex; flex-direction: column;
+  overflow: hidden;
+  backdrop-filter: blur(20px);
+  box-shadow: var(--shadow);
+}
+.chat-header {
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--tt-border);
+  display: flex; align-items: center; justify-content: space-between;
+  background: rgba(232,0,45,0.06);
+}
+.bot-avatar {
+  width: 42px; height: 42px; border-radius: 50%;
+  background: linear-gradient(135deg, var(--tt-red), #ff4d6d);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 1.2rem; box-shadow: 0 0 16px rgba(232,0,45,0.4);
+  flex-shrink: 0;
+}
+.bot-info { flex: 1; margin-right: 12px; }
+.bot-info h3 { font-size: 0.95rem; font-weight: 700; }
+.bot-status {
+  font-size: 0.72rem; color: var(--success);
+  display: flex; align-items: center; gap: 5px;
+}
+.bot-status::before {
+  content: ''; width: 6px; height: 6px; border-radius: 50%;
+  background: var(--success); display: inline-block;
+  animation: pulse-dot 1.5s infinite;
+}
+.chat-actions { display: flex; gap: 8px; }
+.btn-icon {
+  width: 34px; height: 34px; border-radius: 8px; border: none; cursor: pointer;
+  background: rgba(255,255,255,0.06); color: var(--text-muted);
+  display: flex; align-items: center; justify-content: center; font-size: 0.9rem;
+  transition: all 0.2s;
+}
+.btn-icon:hover { background: rgba(232,0,45,0.15); color: var(--tt-red); }
+
+/* Messages */
+.chat-messages {
+  flex: 1; overflow-y: auto; padding: 20px;
+  display: flex; flex-direction: column; gap: 16px;
+  scroll-behavior: smooth;
+}
+.chat-messages::-webkit-scrollbar { width: 4px; }
+.chat-messages::-webkit-scrollbar-track { background: transparent; }
+.chat-messages::-webkit-scrollbar-thumb { background: var(--tt-border); border-radius: 2px; }
+
+.message { display: flex; gap: 10px; align-items: flex-end; animation: fadeUp 0.3s ease; }
+@keyframes fadeUp {
+  from { opacity: 0; transform: translateY(10px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.message.bot  { flex-direction: row; }
+.message.user { flex-direction: row-reverse; }
+
+.msg-avatar {
+  width: 34px; height: 34px; border-radius: 50%; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center; font-size: 0.9rem;
+}
+.message.bot  .msg-avatar { background: linear-gradient(135deg, var(--tt-red), #ff4d6d); }
+.message.user .msg-avatar { background: linear-gradient(135deg, #3b82f6, #60a5fa); }
+
+.msg-content { max-width: 68%; }
+.msg-bubble {
+  padding: 12px 16px; border-radius: 18px; line-height: 1.7;
+  font-size: 0.9rem; word-break: break-word;
+}
+.message.bot  .msg-bubble {
+  background: var(--bot-bubble);
+  border-radius: 4px 18px 18px 18px;
+  border: 1px solid rgba(59,130,246,0.15);
+}
+.message.user .msg-bubble {
+  background: var(--user-bubble);
+  border-radius: 18px 4px 18px 18px;
+  color: white;
+}
+.msg-time {
+  font-size: 0.68rem; color: var(--text-muted);
+  margin-top: 4px; padding: 0 4px;
+}
+.message.user .msg-time { text-align: left; }
+
+/* Typing indicator */
+.typing-indicator {
+  display: none; align-items: center; gap: 10px;
+}
+.typing-indicator.show { display: flex; }
+.typing-dots { display: flex; gap: 4px; padding: 12px 16px; }
+.typing-dots span {
+  width: 8px; height: 8px; border-radius: 50%;
+  background: var(--text-muted); animation: typing 1.2s infinite;
+}
+.typing-dots span:nth-child(2) { animation-delay: 0.2s; }
+.typing-dots span:nth-child(3) { animation-delay: 0.4s; }
+@keyframes typing {
+  0%,60%,100% { transform: translateY(0); opacity: 0.4; }
+  30% { transform: translateY(-8px); opacity: 1; }
+}
+
+/* Transfer banner */
+.transfer-banner {
+  display: none; margin: 8px 20px; padding: 12px 16px;
+  background: rgba(245,158,11,0.1); border: 1px solid rgba(245,158,11,0.3);
+  border-radius: 12px; font-size: 0.85rem; color: var(--transfer);
+  text-align: center;
+}
+.transfer-banner.show { display: block; }
+
+/* ── Input ─────────────────────────────────────────────── */
+.chat-input-area {
+  padding: 16px 20px;
+  border-top: 1px solid var(--tt-border);
+  background: rgba(0,0,0,0.2);
+}
+.input-row {
+  display: flex; gap: 10px; align-items: center;
+  background: rgba(255,255,255,0.05);
+  border: 1px solid var(--tt-border); border-radius: 50px;
+  padding: 6px 6px 6px 18px;
+  transition: border-color 0.3s;
+}
+.input-row:focus-within { border-color: rgba(232,0,45,0.6); }
+.msg-input {
+  flex: 1; background: transparent; border: none; outline: none;
+  color: var(--text-main); font-family: 'Cairo', sans-serif;
+  font-size: 0.92rem; direction: rtl; text-align: right;
+}
+.msg-input::placeholder { color: var(--text-muted); }
+.btn-voice, .btn-send {
+  width: 42px; height: 42px; border-radius: 50%; border: none;
+  cursor: pointer; display: flex; align-items: center; justify-content: center;
+  font-size: 1rem; transition: all 0.2s; flex-shrink: 0;
+}
+.btn-voice {
+  background: rgba(59,130,246,0.15); color: #60a5fa;
+  border: 1px solid rgba(59,130,246,0.25);
+}
+.btn-voice:hover { background: rgba(59,130,246,0.3); transform: scale(1.05); }
+.btn-voice.recording {
+  background: rgba(232,0,45,0.2); color: var(--tt-red);
+  border-color: rgba(232,0,45,0.4); animation: record-pulse 1s infinite;
+}
+@keyframes record-pulse {
+  0%,100% { box-shadow: 0 0 0 0 rgba(232,0,45,0.4); }
+  50% { box-shadow: 0 0 0 8px rgba(232,0,45,0); }
+}
+.btn-send {
+  background: linear-gradient(135deg, var(--tt-red), #ff4d6d);
+  color: white; box-shadow: 0 4px 12px rgba(232,0,45,0.3);
+}
+.btn-send:hover { transform: scale(1.05); box-shadow: 0 6px 16px rgba(232,0,45,0.4); }
+.btn-send:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
+.input-hint {
+  font-size: 0.7rem; color: var(--text-muted); text-align: center;
+  margin-top: 8px;
+}
+
+/* ══════════════════════════════════════════════════════
+   ANALYSIS PANEL (Right)
+══════════════════════════════════════════════════════ */
+.analysis-panel {
+  display: flex; flex-direction: column; gap: 14px;
+  overflow-y: auto;
+}
+.analysis-panel::-webkit-scrollbar { width: 3px; }
+.analysis-panel::-webkit-scrollbar-thumb { background: var(--tt-border); }
+
+.panel-card {
+  background: var(--tt-glass);
+  border: 1px solid var(--tt-border);
+  border-radius: 16px; padding: 18px;
+  backdrop-filter: blur(20px);
+  box-shadow: var(--shadow);
+}
+.panel-card h4 {
+  font-size: 0.8rem; color: var(--text-muted); margin-bottom: 14px;
+  text-transform: uppercase; letter-spacing: 1px;
+  display: flex; align-items: center; gap: 8px;
+  font-family: 'Inter', sans-serif;
+}
+.panel-card h4 i { color: var(--tt-red); }
+
+/* Decision badge */
+.decision-badge {
+  width: 100%; padding: 14px; border-radius: 12px; text-align: center;
+  font-size: 0.9rem; font-weight: 700; margin-bottom: 4px;
+  display: flex; align-items: center; justify-content: center; gap: 8px;
+  transition: all 0.4s;
+}
+.decision-auto {
+  background: rgba(0,217,126,0.12); color: var(--success);
+  border: 1px solid rgba(0,217,126,0.3);
+}
+.decision-escalade {
+  background: rgba(245,158,11,0.12); color: var(--transfer);
+  border: 1px solid rgba(245,158,11,0.3);
+}
+
+/* Analysis rows */
+.analysis-row {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 8px 0; border-bottom: 1px solid rgba(255,255,255,0.04);
+  font-size: 0.85rem;
+}
+.analysis-row:last-child { border-bottom: none; }
+.analysis-label { color: var(--text-muted); font-size: 0.78rem; }
+.analysis-value {
+  font-weight: 600; color: var(--text-main);
+  text-align: left; font-family: 'Cairo', sans-serif;
+}
+.analysis-value.red   { color: var(--tt-red); }
+.analysis-value.green { color: var(--success); }
+.analysis-value.blue  { color: #60a5fa; }
+.analysis-value.warn  { color: var(--warning); }
+
+/* Confidence bar */
+.confidence-bar-wrap { width: 100%; }
+.confidence-label {
+  display: flex; justify-content: space-between;
+  font-size: 0.75rem; margin-bottom: 5px; color: var(--text-muted);
+}
+.confidence-bar {
+  height: 6px; background: rgba(255,255,255,0.08);
+  border-radius: 3px; overflow: hidden;
+}
+.confidence-fill {
+  height: 100%; border-radius: 3px; transition: width 0.6s ease;
+  background: linear-gradient(90deg, var(--tt-red), #ff6b6b);
+}
+.confidence-fill.blue {
+  background: linear-gradient(90deg, #3b82f6, #60a5fa);
+}
+
+/* Sentiment pill */
+.sentiment-pill {
+  padding: 3px 12px; border-radius: 20px; font-size: 0.78rem; font-weight: 600;
+}
+.sentiment-neg  { background: rgba(232,0,45,0.15);   color: var(--tt-red); }
+.sentiment-pos  { background: rgba(0,217,126,0.15);  color: var(--success); }
+.sentiment-neu  { background: rgba(255,255,255,0.08); color: var(--text-muted); }
+
+/* System info */
+.sys-row {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 6px 0; font-size: 0.8rem;
+}
+.sys-label { color: var(--text-muted); }
+.sys-value { font-weight: 600; font-family: 'Inter', sans-serif; font-size: 0.78rem; }
+.pill-on  { background: rgba(0,217,126,0.15); color: var(--success); padding: 2px 10px; border-radius: 20px; }
+.pill-off { background: rgba(255,255,255,0.06); color: var(--text-muted); padding: 2px 10px; border-radius: 20px; }
+
+/* Stats numbers */
+.stat-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 4px; }
+.stat-box {
+  background: rgba(255,255,255,0.04); border-radius: 10px; padding: 10px;
+  text-align: center; border: 1px solid rgba(255,255,255,0.06);
+}
+.stat-box .num { font-size: 1.4rem; font-weight: 700; color: var(--tt-red); font-family: 'Inter', sans-serif; }
+.stat-box .lbl { font-size: 0.68rem; color: var(--text-muted); margin-top: 2px; }
+
+/* ── Human agent modal ─────────────────────────────────── */
+.overlay {
+  position: fixed; inset: 0; background: rgba(0,0,0,0.7);
+  backdrop-filter: blur(8px); z-index: 200; display: none;
+  align-items: center; justify-content: center;
+}
+.overlay.show { display: flex; }
+.modal {
+  background: var(--tt-card); border: 1px solid var(--tt-border);
+  border-radius: 20px; padding: 28px; width: 500px; max-width: 95vw;
+  box-shadow: var(--shadow);
+}
+.modal h3 { font-size: 1.1rem; margin-bottom: 6px; color: var(--transfer); }
+.modal p  { font-size: 0.83rem; color: var(--text-muted); margin-bottom: 18px; }
+.modal textarea {
+  width: 100%; min-height: 120px; background: rgba(255,255,255,0.05);
+  border: 1px solid var(--tt-border); border-radius: 12px; padding: 12px;
+  color: var(--text-main); font-family: 'Cairo', sans-serif; font-size: 0.9rem;
+  resize: vertical; direction: rtl;
+}
+.modal textarea:focus { outline: none; border-color: var(--transfer); }
+.modal-actions { display: flex; gap: 10px; margin-top: 14px; justify-content: flex-end; }
+.btn-primary, .btn-secondary {
+  padding: 10px 22px; border-radius: 10px; border: none;
+  cursor: pointer; font-family: 'Cairo', sans-serif; font-size: 0.88rem; font-weight: 600;
+}
+.btn-primary   { background: var(--transfer); color: white; }
+.btn-secondary { background: rgba(255,255,255,0.08); color: var(--text-muted); }
+
+/* ── New session button ─────────────────────────────────── */
+.btn-new-session {
+  padding: 7px 16px; border-radius: 20px; border: 1px solid rgba(255,255,255,0.15);
+  background: transparent; color: rgba(255,255,255,0.8); cursor: pointer;
+  font-family: 'Cairo', sans-serif; font-size: 0.8rem; display: flex; align-items: center; gap: 6px;
+  transition: all 0.2s;
+}
+.btn-new-session:hover { background: rgba(255,255,255,0.1); }
+
+/* ── Welcome screen ─────────────────────────────────────── */
+.welcome-msg {
+  text-align: center; color: var(--text-muted); padding: 40px 20px;
+  display: flex; flex-direction: column; align-items: center; gap: 10px;
+}
+.welcome-msg i { font-size: 2.5rem; color: var(--tt-border); }
+.welcome-msg p { font-size: 0.85rem; }
+
+/* ══════════════════════════════════════════════════════
+   RESPONSIVE
+══════════════════════════════════════════════════════ */
+@media (max-width: 900px) {
+  .main-container { grid-template-columns: 1fr; height: auto; }
+  .analysis-panel { display: none; }
+}
+</style>
+</head>
+<body>
+
+<!-- ══ HEADER ══════════════════════════════════════════════ -->
+<header>
+  <div class="header-brand">
+    <div class="header-logo">TT</div>
+    <div class="header-title">
+      <h1>Tunisie Telecom</h1>
+      <p>Centre d'Appel Virtuel Intelligent — دارجة تونسية</p>
+    </div>
+  </div>
+  <div class="header-badges" id="headerBadges">
+    <span class="badge badge-ml"><span class="badge-dot green"></span>ML Models</span>
+    <span class="badge badge-rag"><span class="badge-dot blue"></span>RAG FAISS</span>
+    <!-- Bouton TTS ON/OFF -->
+    <button id="btnTTS" onclick="toggleTTS()"
+      style="padding:4px 14px;border-radius:20px;border:1px solid rgba(255,255,255,0.25);
+             background:rgba(255,255,255,0.1);color:white;cursor:pointer;
+             font-family:'Cairo',sans-serif;font-size:0.78rem;display:flex;
+             align-items:center;gap:6px;transition:all 0.2s;">
+      <i class="fas fa-volume-high" id="ttsIcon"></i>
+      <span id="ttsLabel">صوت البوت: ON</span>
+    </button>
+  </div>
+</header>
+
+<!-- ══ MAIN ════════════════════════════════════════════════ -->
+<div class="main-container">
+
+  <!-- ── CHAT PANEL ─────────────────────────────────────── -->
+  <div class="chat-panel">
+
+    <div class="chat-header">
+      <div style="display:flex;align-items:center;gap:12px;">
+        <div class="bot-avatar">🤖</div>
+        <div class="bot-info">
+          <h3>الوكيل الآلي — Agent Virtuel TT</h3>
+          <div class="bot-status" id="botStatus">متصل — En ligne</div>
+        </div>
+      </div>
+      <div class="chat-actions">
+        <button class="btn-new-session" onclick="newSession()">
+          <i class="fas fa-plus"></i> جلسة جديدة
+        </button>
+      </div>
+    </div>
+
+    <div class="chat-messages" id="chatMessages">
+      <div class="welcome-msg">
+        <i class="fas fa-robot"></i>
+        <p>اضغط "جلسة جديدة" لبدء المحادثة</p>
+        <p style="font-size:0.75rem">Cliquez sur "جلسة جديدة" pour démarrer</p>
+      </div>
+    </div>
+
+    <!-- Typing -->
+    <div class="typing-indicator" id="typingIndicator" style="padding:0 20px 10px;">
+      <div class="msg-avatar bot-avatar" style="width:34px;height:34px;font-size:0.9rem;">🤖</div>
+      <div class="typing-dots">
+        <span></span><span></span><span></span>
+      </div>
+    </div>
+
+    <!-- Transfer banner -->
+    <div class="transfer-banner" id="transferBanner">
+      <i class="fas fa-headset"></i>
+      يتم تحويلك إلى وكيل بشري — <a href="#" onclick="openHumanModal()" style="color:var(--transfer);">إدخال رد الوكيل</a>
+    </div>
+
+    <div class="chat-input-area">
+      <div class="input-row">
+        <button class="btn-voice" id="btnVoice" onclick="toggleRecording()" title="تسجيل صوتي">
+          <i class="fas fa-microphone" id="micIcon"></i>
+        </button>
+        <input type="text" class="msg-input" id="msgInput"
+               placeholder="اكتب رسالتك هنا... / Tapez votre message..."
+               onkeypress="handleKeyPress(event)" dir="rtl"/>
+        <button class="btn-send" id="btnSend" onclick="sendMessage()">
+          <i class="fas fa-paper-plane"></i>
+        </button>
+      </div>
+      <div class="input-hint" id="inputHint">
+        <i class="fas fa-info-circle"></i>
+        اكتب رسالتك أو استخدم الميكروفون — اضغط Enter للإرسال
+      </div>
+    </div>
+  </div>
+
+  <!-- ── ANALYSIS PANEL ─────────────────────────────────── -->
+  <div class="analysis-panel">
+
+    <!-- Decision -->
+    <div class="panel-card">
+      <h4><i class="fas fa-brain"></i> قرار الذكاء الاصطناعي</h4>
+      <div class="decision-badge decision-auto" id="decisionBadge">
+        <i class="fas fa-circle-check"></i>
+        <span id="decisionText">في انتظار رسالة...</span>
+      </div>
+    </div>
+
+    <!-- NLU Analysis -->
+    <div class="panel-card">
+      <h4><i class="fas fa-magnifying-glass-chart"></i> تحليل NLU</h4>
+
+      <div class="analysis-row">
+        <span class="analysis-label">نوع المشكلة</span>
+        <span class="analysis-value" id="aIntent">—</span>
+      </div>
+      <div class="analysis-row">
+        <span class="analysis-label">المشاعر</span>
+        <span id="aSentiment"><span class="sentiment-pill sentiment-neu">—</span></span>
+      </div>
+      <div class="analysis-row">
+        <span class="analysis-label">نوع الخدمة</span>
+        <span class="analysis-value blue" id="aService">—</span>
+      </div>
+      <div class="analysis-row">
+        <span class="analysis-label">الولاية</span>
+        <span class="analysis-value" id="aWilaya">—</span>
+      </div>
+      <div class="analysis-row">
+        <span class="analysis-label">المعتمدية</span>
+        <span class="analysis-value" id="aDelegation">—</span>
+      </div>
+      <div class="analysis-row">
+        <span class="analysis-label">الإجراء المقترح</span>
+        <span class="analysis-value green" id="aAction" style="font-size:0.78rem;max-width:160px;text-align:left;">—</span>
+      </div>
+
+      <div style="margin-top:14px;">
+        <div class="confidence-bar-wrap">
+          <div class="confidence-label">
+            <span>ثقة ML</span>
+            <span id="confNluPct">0%</span>
+          </div>
+          <div class="confidence-bar">
+            <div class="confidence-fill" id="confNluBar" style="width:0%"></div>
+          </div>
+        </div>
+        <div class="confidence-bar-wrap" style="margin-top:10px;">
+          <div class="confidence-label">
+            <span>ثقة RAG</span>
+            <span id="confRagPct">0%</span>
+          </div>
+          <div class="confidence-bar">
+            <div class="confidence-fill blue" id="confRagBar" style="width:0%"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Session stats -->
+    <div class="panel-card">
+      <h4><i class="fas fa-chart-bar"></i> إحصائيات الجلسة</h4>
+      <div class="stat-grid">
+        <div class="stat-box">
+          <div class="num" id="statTurns">0</div>
+          <div class="lbl">رسائل</div>
+        </div>
+        <div class="stat-box">
+          <div class="num" id="statDataset">—</div>
+          <div class="lbl">Dataset</div>
+        </div>
+        <div class="stat-box">
+          <div class="num" id="statLearned">—</div>
+          <div class="lbl">مكتسب</div>
+        </div>
+        <div class="stat-box">
+          <div class="num" id="statSessions">—</div>
+          <div class="lbl">جلسات</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- System status -->
+    <div class="panel-card">
+      <h4><i class="fas fa-server"></i> حالة النظام</h4>
+      <div class="sys-row">
+        <span class="sys-label">نماذج ML.ipynb</span>
+        <span class="sys-value" id="sysML"><span class="pill-off">...</span></span>
+      </div>
+      <div class="sys-row">
+        <span class="sys-label">Whisper STT</span>
+        <span class="sys-value" id="sysWhisper"><span class="pill-off">...</span></span>
+      </div>
+      <div class="sys-row">
+        <span class="sys-label">FAISS RAG</span>
+        <span class="sys-value" id="sysFAISS"><span class="pill-off">...</span></span>
+      </div>
+      <div class="sys-row">
+        <span class="sys-label">Voix TTS</span>
+        <span class="sys-value" id="sysElevenLabs"><span class="pill-off">...</span></span>
+      </div>
+      <div class="sys-row">
+        <span class="sys-label">Embedding</span>
+        <span class="sys-value" id="sysEmbed" style="color:var(--text-muted);font-size:0.72rem;">...</span>
+      </div>
+    </div>
+
+  </div><!-- /analysis-panel -->
+</div><!-- /main-container -->
+
+<!-- ══ HUMAN AGENT MODAL ════════════════════════════════════ -->
+<div class="overlay" id="humanModal">
+  <div class="modal">
+    <h3><i class="fas fa-headset"></i> وكيل بشري — Agent Humain</h3>
+    <p>لم يتمكن الوكيل الآلي من حل هذه المشكلة. أدخل ردك أدناه — سيتم تعلمه تلقائياً.</p>
+    <textarea id="humanResponseText" placeholder="اكتب الرد هنا بالدارجة التونسية..." dir="rtl"></textarea>
+    <div class="modal-actions">
+      <button class="btn-secondary" onclick="closeHumanModal()">إلغاء</button>
+      <button class="btn-primary" onclick="submitHumanResponse()">
+        <i class="fas fa-paper-plane"></i> إرسال وتعلم
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════
+     JAVASCRIPT
+══════════════════════════════════════════════════════════ -->
+<script>
+let sessionId       = null;
+let isRecording     = false;
+let mediaRecorder   = null;
+let audioChunks     = [];
+let currentTicketId = null;
+let totalTurns      = 0;
+let ttsEnabled      = true;
+let currentAudio    = null;   // ElevenLabs Audio object en cours
+
+// ── Démarrage ──────────────────────────────────────────────
+window.addEventListener('DOMContentLoaded', () => {
+  loadStats();
+  setInterval(loadStats, 30000);
+  initTTS();
+});
+
+// ══════════════════════════════════════════════════════════
+//  TTS — Voix du Bot (ElevenLabs via /api/tts)
+//  Fallback automatique vers Web Speech API si clé non configurée
+// ══════════════════════════════════════════════════════════
+function initTTS() {
+  // Précharge les voix Web Speech pour le fallback
+  if ('speechSynthesis' in window) {
+    window.speechSynthesis.getVoices();
+  }
+}
+
+async function speakBotResponse(text) {
+  if (!ttsEnabled || !text) return;
+
+  // Arrêter toute lecture en cours
+  if (currentAudio) { currentAudio.pause(); currentAudio = null; }
+  if ('speechSynthesis' in window) window.speechSynthesis.cancel();
+
+  setBotStatus('يتكلم... 🔊');
+
+  try {
+    const r = await fetch('/api/tts', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ text: text })
+    });
+
+    if (!r.ok) {
+      // Le serveur n'a pas pu générer l'audio (ni ElevenLabs ni gTTS)
+      // → dernier recours : Web Speech API navigateur
+      const errData = await r.json().catch(() => ({}));
+      console.warn('TTS serveur indisponible:', errData.error || r.status, '→ fallback navigateur');
+      _showTTSWarning('pip install gtts  (dans le terminal, puis redémarrer app.py)');
+      _fallbackWebSpeech(text);
+      return;
+    }
+
+    const blob = await r.blob();
+    const url  = URL.createObjectURL(blob);
+    currentAudio = new Audio(url);
+
+    currentAudio.onended = () => {
+      setBotStatus('متصل — En ligne');
+      URL.revokeObjectURL(url);
+      currentAudio = null;
+    };
+    currentAudio.onerror = (e) => {
+      console.warn('Erreur lecture audio ElevenLabs:', e, '→ fallback');
+      setBotStatus('متصل — En ligne');
+      currentAudio = null;
+      _fallbackWebSpeech(text);
+    };
+
+    await currentAudio.play();
+
+  } catch(e) {
+    console.warn('Erreur TTS ElevenLabs:', e, '→ fallback Web Speech');
+    _fallbackWebSpeech(text);
+  }
+}
+
+// Notification visible quand ElevenLabs n'est pas configuré
+let _ttsWarningShown = false;
+function _showTTSWarning(errMsg) {
+  if (_ttsWarningShown) return;
+  _ttsWarningShown = true;
+  // Bannière en haut du chat
+  const banner = document.createElement('div');
+  banner.style.cssText =
+    'margin:8px 20px;padding:10px 14px;background:rgba(245,158,11,0.12);' +
+    'border:1px solid rgba(245,158,11,0.35);border-radius:10px;font-size:0.8rem;' +
+    'color:#ffc107;text-align:center;direction:ltr;';
+  banner.innerHTML =
+    '<i class="fas fa-exclamation-triangle"></i> ' +
+    'ElevenLabs TTS non actif — ' + _escTxt(errMsg) +
+    '<br><small style="color:#8892b0">Voix navigateur utilisée. ' +
+    'Ajoutez votre clé API dans config.py pour la voix ElevenLabs.</small>';
+  const msgs = document.getElementById('chatMessages');
+  msgs.parentNode.insertBefore(banner, msgs);
+}
+function _escTxt(t) { const d = document.createElement('span'); d.textContent = t; return d.innerHTML; }
+
+// Fallback Web Speech API (voix navigateur, arabe)
+function _fallbackWebSpeech(text) {
+  if (!('speechSynthesis' in window)) {
+    setBotStatus('متصل — En ligne');
+    return;
+  }
+  const voices = window.speechSynthesis.getVoices();
+  const arVoice = voices.find(v => v.lang.startsWith('ar-TN'))
+               || voices.find(v => v.lang.startsWith('ar-SA'))
+               || voices.find(v => v.lang.startsWith('ar'))
+               || null;
+
+  const utterance      = new SpeechSynthesisUtterance(text);
+  utterance.lang       = arVoice ? arVoice.lang : 'ar';
+  utterance.rate       = 0.88;
+  utterance.pitch      = 1.0;
+  utterance.volume     = 1.0;
+  if (arVoice) utterance.voice = arVoice;
+  utterance.onend  = () => setBotStatus('متصل — En ligne');
+  utterance.onerror = () => setBotStatus('متصل — En ligne');
+  window.speechSynthesis.speak(utterance);
+}
+
+function toggleTTS() {
+  ttsEnabled = !ttsEnabled;
+  // Arrêter toute lecture en cours
+  if (currentAudio) { currentAudio.pause(); currentAudio = null; }
+  if ('speechSynthesis' in window) window.speechSynthesis.cancel();
+  setBotStatus('متصل — En ligne');
+
+  const icon  = document.getElementById('ttsIcon');
+  const label = document.getElementById('ttsLabel');
+  const btn   = document.getElementById('btnTTS');
+  if (ttsEnabled) {
+    icon.className     = 'fas fa-volume-high';
+    label.textContent  = 'صوت البوت: ON';
+    btn.style.background  = 'rgba(0,217,126,0.15)';
+    btn.style.borderColor = 'rgba(0,217,126,0.35)';
+  } else {
+    icon.className     = 'fas fa-volume-xmark';
+    label.textContent  = 'صوت البوت: OFF';
+    btn.style.background  = 'rgba(255,255,255,0.08)';
+    btn.style.borderColor = 'rgba(255,255,255,0.15)';
+  }
+}
+
+// ── Stats système ──────────────────────────────────────────
+async function loadStats() {
+  try {
+    const r = await fetch('/api/stats');
+    const d = await r.json();
+
+    const mlLabel = d.ml_backend || (d.ml_active ? 'فعّال' : 'غير متاح');
+    document.getElementById('sysML').innerHTML =
+      d.ml_active ? `<span class="pill-on">✅ ${mlLabel}</span>` : '<span class="pill-off">⚠️ غير متاح</span>';
+    document.getElementById('sysWhisper').innerHTML =
+      d.whisper_active ? '<span class="pill-on">✅ فعّال</span>' : '<span class="pill-off">⚠️ غير متاح</span>';
+    document.getElementById('sysFAISS').innerHTML =
+      d.dataset_size > 0 ? `<span class="pill-on">✅ ${d.dataset_size}</span>` : '<span class="pill-off">غير جاهز</span>';
+    // Afficher le moteur TTS actif
+    const ttsEngine = d.tts_engine || (d.elevenlabs ? 'ElevenLabs' : d.gtts ? 'gTTS' : 'navigateur');
+    const ttsOk = d.elevenlabs || d.gtts;
+    document.getElementById('sysElevenLabs').innerHTML = ttsOk
+      ? `<span class="pill-on">✅ ${ttsEngine}</span>`
+      : '<span class="pill-off">⚠️ pip install gtts</span>';
+    document.getElementById('sysEmbed').textContent = d.embedding || '—';
+
+    document.getElementById('statDataset').textContent = d.dataset_size || '—';
+    document.getElementById('statLearned').textContent = d.learned?.total_learned ?? '—';
+    document.getElementById('statSessions').textContent = d.sessions || '—';
+
+  } catch(e) { console.warn('Stats error:', e); }
+}
+
+// ── Nouvelle session ───────────────────────────────────────
+async function newSession() {
+  totalTurns = 0;
+  document.getElementById('statTurns').textContent = '0';
+
+  try {
+    const r = await fetch('/api/new_session', { method: 'POST' });
+    const d = await r.json();
+    sessionId = d.session_id;
+
+    // Vider la zone de chat
+    const box = document.getElementById('chatMessages');
+    box.innerHTML = '';
+    resetAnalysis();
+
+    if (d.needs_greeting) {
+      // Le bot attend la salutation du user → afficher un hint discret
+      const hint = document.createElement('div');
+      hint.id = 'greetingHint';
+      hint.style.cssText =
+        'text-align:center;padding:24px 16px;color:var(--text-muted);font-size:0.92rem;';
+      hint.innerHTML =
+        '<div style="font-size:2rem;margin-bottom:10px;">👋</div>' +
+        '<div>ابدأ المحادثة بقول <strong style="color:var(--tt-red)">عسلامة</strong> أو <strong style="color:var(--tt-red)">مرحبا</strong></div>' +
+        '<div style="font-size:0.78rem;margin-top:6px;opacity:0.6">Commencez par saluer le bot</div>';
+      box.appendChild(hint);
+    } else if (d.greeting) {
+      appendMessage('bot', d.greeting);
+      speakBotResponse(d.greeting);
+    }
+
+    document.getElementById('transferBanner').classList.remove('show');
+    document.getElementById('msgInput').disabled = false;
+    document.getElementById('btnSend').disabled  = false;
+    document.getElementById('msgInput').focus();
+
+    // Mettre à jour badge ML avec nom du backend
+    const mlBadge = document.querySelector('.badge-ml');
+    if (d.ml_active) {
+      mlBadge.style.display = '';
+      const badgeTxt = mlBadge.childNodes[mlBadge.childNodes.length - 1];
+      badgeTxt.textContent = d.ml_backend || 'ML Models';
+    } else {
+      mlBadge.style.background = 'rgba(255,193,7,0.15)';
+      mlBadge.style.color = '#ffc107';
+      const badgeTxt = mlBadge.childNodes[mlBadge.childNodes.length - 1];
+      badgeTxt.textContent = 'Règles';
+    }
+
+  } catch(e) {
+    alert('Erreur de connexion au serveur. Assure-toi que app.py tourne.');
+  }
+}
+
+// ── Envoyer message ────────────────────────────────────────
+async function sendMessage() {
+  if (!sessionId) { alert('اضغط "جلسة جديدة" أولاً'); return; }
+
+  const input = document.getElementById('msgInput');
+  const text  = input.value.trim();
+  if (!text) return;
+
+  input.value = '';
+  appendMessage('user', text);
+  totalTurns++;
+  document.getElementById('statTurns').textContent = totalTurns;
+
+  showTyping(true);
+  setBotStatus('يعالج...');
+
+  try {
+    const r = await fetch('/api/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message: text, session_id: sessionId })
+    });
+    const d = await r.json();
+    showTyping(false);
+
+    // Supprimer le hint de salutation s'il est encore visible
+    const hint = document.getElementById('greetingHint');
+    if (hint) hint.remove();
+
+    appendMessage('bot', d.bot_response);
+    speakBotResponse(d.bot_response);   // 🔊 Le bot parle
+    updateAnalysis(d.analysis || {});
+
+    if (d.transferred) {
+      currentTicketId = d.ticket_id;
+      document.getElementById('transferBanner').classList.add('show');
+      setBotStatus('محوّل لوكيل بشري');
+      document.getElementById('msgInput').disabled = true;
+      document.getElementById('btnSend').disabled  = true;
+    } else if (d.session_ended) {
+      setBotStatus('الجلسة منتهية');
+      document.getElementById('msgInput').disabled = true;
+      document.getElementById('btnSend').disabled  = true;
+    } else {
+      setBotStatus('متصل — En ligne');
+    }
+
+  } catch(e) {
+    showTyping(false);
+    appendMessage('bot', '⚠️ خطأ في الاتصال بالخادم');
+    console.error(e);
+  }
+}
+
+function handleKeyPress(e) {
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
+}
+
+// ── Messages ──────────────────────────────────────────────
+function appendMessage(role, text) {
+  const box  = document.getElementById('chatMessages');
+  const div  = document.createElement('div');
+  div.className = `message ${role}`;
+
+  const avatar = role === 'bot' ? '🤖' : '👤';
+  const now    = new Date().toLocaleTimeString('ar-TN', { hour:'2-digit', minute:'2-digit' });
+
+  div.innerHTML = `
+    <div class="msg-avatar">${avatar}</div>
+    <div class="msg-content">
+      <div class="msg-bubble">${escHtml(text)}</div>
+      <div class="msg-time">${now}</div>
+    </div>`;
+
+  box.appendChild(div);
+  box.scrollTop = box.scrollHeight;
+}
+
+function escHtml(t) {
+  return t.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\n/g,'<br>');
+}
+
+// ── Typing ────────────────────────────────────────────────
+function showTyping(show) {
+  document.getElementById('typingIndicator').classList.toggle('show', show);
+  const box = document.getElementById('chatMessages');
+  box.scrollTop = box.scrollHeight;
+}
+
+// ── Bot status ────────────────────────────────────────────
+function setBotStatus(text) {
+  document.getElementById('botStatus').textContent = text;
+}
+
+// ── Analysis panel ────────────────────────────────────────
+function updateAnalysis(a) {
+  if (!a || !Object.keys(a).length) return;
+
+  // Decision
+  const badge = document.getElementById('decisionBadge');
+  const dtext = document.getElementById('decisionText');
+  if (a.decision === 'escalade_agent_humain' || a.escalate) {
+    badge.className = 'decision-badge decision-escalade';
+    dtext.innerHTML = '<i class="fas fa-headset"></i> تحويل لوكيل بشري';
+  } else {
+    badge.className = 'decision-badge decision-auto';
+    dtext.innerHTML = '<i class="fas fa-circle-check"></i> حل تلقائي';
+  }
+
+  // Fields
+  document.getElementById('aIntent').textContent      = a.intent      || '—';
+  document.getElementById('aService').textContent     = a.service_type || '—';
+  document.getElementById('aWilaya').textContent      = a.wilaya       || '—';
+  document.getElementById('aDelegation').textContent  = a.delegation   || '—';
+  document.getElementById('aAction').textContent      = a.action       || '—';
+
+  // Sentiment
+  const sentMap = {
+    'سلبي':   ['sentiment-neg', '😤 سلبي'],
+    'إيجابي': ['sentiment-pos', '😊 إيجابي'],
+    'محايد':  ['sentiment-neu', '😐 محايد'],
+  };
+  const [cls, lbl] = sentMap[a.sentiment] || ['sentiment-neu', a.sentiment || '—'];
+  document.getElementById('aSentiment').innerHTML =
+    `<span class="sentiment-pill ${cls}">${lbl}</span>`;
+
+  // Confidence bars
+  const nluConf = a.confidence_nlu || 0;
+  const ragConf = a.confidence_rag || 0;
+  document.getElementById('confNluPct').textContent = nluConf + '%';
+  document.getElementById('confNluBar').style.width = nluConf + '%';
+  document.getElementById('confRagPct').textContent = ragConf + '%';
+  document.getElementById('confRagBar').style.width = ragConf + '%';
+}
+
+function resetAnalysis() {
+  document.getElementById('decisionBadge').className = 'decision-badge decision-auto';
+  document.getElementById('decisionText').textContent = 'في انتظار رسالة...';
+  ['aIntent','aService','aWilaya','aDelegation','aAction'].forEach(id => {
+    document.getElementById(id).textContent = '—';
+  });
+  document.getElementById('aSentiment').innerHTML = '<span class="sentiment-pill sentiment-neu">—</span>';
+  document.getElementById('confNluPct').textContent = '0%';
+  document.getElementById('confNluBar').style.width = '0%';
+  document.getElementById('confRagPct').textContent = '0%';
+  document.getElementById('confRagBar').style.width = '0%';
+}
+
+// ── Voice recording ───────────────────────────────────────
+async function toggleRecording() {
+  if (!sessionId) { alert('اضغط "جلسة جديدة" أولاً'); return; }
+
+  if (!isRecording) {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm' });
+      audioChunks   = [];
+      mediaRecorder.ondataavailable = e => audioChunks.push(e.data);
+      mediaRecorder.onstop = sendVoice;
+      mediaRecorder.start();
+      isRecording = true;
+      document.getElementById('btnVoice').classList.add('recording');
+      document.getElementById('micIcon').className = 'fas fa-stop';
+      document.getElementById('inputHint').innerHTML =
+        '<i class="fas fa-circle" style="color:var(--tt-red);animation:pulse-dot 1s infinite"></i> جارٍ التسجيل... اضغط مرة أخرى للإيقاف';
+    } catch(e) {
+      alert('لا يمكن الوصول للميكروفون: ' + e.message);
+    }
+  } else {
+    mediaRecorder.stop();
+    mediaRecorder.stream.getTracks().forEach(t => t.stop());
+    isRecording = false;
+    document.getElementById('btnVoice').classList.remove('recording');
+    document.getElementById('micIcon').className = 'fas fa-microphone';
+    document.getElementById('inputHint').innerHTML =
+      '<i class="fas fa-circle-notch fa-spin"></i> جارٍ المعالجة...';
+  }
+}
+
+async function sendVoice() {
+  const blob = new Blob(audioChunks, { type: 'audio/webm' });
+  const form = new FormData();
+  form.append('audio', blob, 'recording.webm');
+  form.append('session_id', sessionId);
+
+  showTyping(true);
+  try {
+    const r = await fetch('/api/voice', { method: 'POST', body: form });
+    const d = await r.json();
+    showTyping(false);
+
+    if (d.error) {
+      document.getElementById('inputHint').textContent = '⚠️ ' + d.error;
+      return;
+    }
+    if (d.transcript) {
+      appendMessage('user', '🎙️ ' + d.transcript);
+      appendMessage('bot', d.bot_response);
+      speakBotResponse(d.bot_response);   // 🔊
+      updateAnalysis(d.analysis || {});
+      totalTurns++;
+      document.getElementById('statTurns').textContent = totalTurns;
+    }
+    document.getElementById('inputHint').innerHTML =
+      '<i class="fas fa-info-circle"></i> اكتب رسالتك أو استخدم الميكروفون — اضغط Enter للإرسال';
+  } catch(e) {
+    showTyping(false);
+    console.error(e);
+  }
+}
+
+// ── Human agent modal ─────────────────────────────────────
+function openHumanModal() {
+  document.getElementById('humanModal').classList.add('show');
+  document.getElementById('humanResponseText').focus();
+}
+function closeHumanModal() {
+  document.getElementById('humanModal').classList.remove('show');
+}
+
+async function submitHumanResponse() {
+  const text = document.getElementById('humanResponseText').value.trim();
+  if (!text) { alert('يرجى إدخال الرد'); return; }
+
+  try {
+    const r = await fetch('/api/human_response', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        ticket_id:  currentTicketId,
+        response:   text,
+        session_id: sessionId,
+      })
+    });
+    const d = await r.json();
+    closeHumanModal();
+
+    appendMessage('bot', text);
+    speakBotResponse(text);
+    appendMessage('bot', '✅ تم التعلم من رد الوكيل البشري وحفظه في قاعدة البيانات.');
+    document.getElementById('transferBanner').classList.remove('show');
+    document.getElementById('msgInput').disabled = true;
+    document.getElementById('btnSend').disabled  = true;
+    setBotStatus('جلسة منتهية — تم التعلم');
+
+    document.getElementById('humanResponseText').value = '';
+    loadStats();
+
+  } catch(e) { console.error(e); }
+}
+</script>
+</body>
+</html>
