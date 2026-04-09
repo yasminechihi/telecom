@@ -41,10 +41,9 @@ DELEGATION_WILAYA_MAP = {
     # بنزرت
     "بنزرت": "بنزرت",       "ماطر": "بنزرت",      "تينجة": "بنزرت",
     "غار الملح": "بنزرت",   "منزل بورقيبة": "بنزرت", "سجنان": "بنزرت",
-    "دقاش": "بنزرت",        "دڤاش": "بنزرت",
     # الكاف
     "الكاف": "الكاف",       "تاجروين": "الكاف",   "قعفور": "الكاف",
-    "الدهماني": "الكاف",    "طبرقة": "الكاف",
+    "الدهماني": "الكاف",
     # سليانة
     "سليانة": "سليانة",     "بوعرادة": "سليانة",  "مكثر": "سليانة",
     "الروحية": "سليانة",    "كسرى": "سليانة",
@@ -69,7 +68,8 @@ DELEGATION_WILAYA_MAP = {
     "زرمدين": "المنستير",   "بوحجر": "المنستير",  "الساحلين": "المنستير",
     # المهدية
     "المهدية": "المهدية",   "الجم": "المهدية",    "السواسي": "المهدية",
-    "ملولش": "المهدية",
+    "ملولش": "المهدية",     "الشابة": "المهدية",   "سيدي علوان": "المهدية",
+    "بومرداس": "المهدية",
     # صفاقس
     "صفاقس": "صفاقس",       "عقارب": "صفاقس",     "جبنيانة": "صفاقس",
     "العامرة": "صفاقس",
@@ -79,6 +79,7 @@ DELEGATION_WILAYA_MAP = {
     # مدنين
     "مدنين": "مدنين",        "جرجيس": "مدنين",    "بنقردان": "مدنين",
     "زرزيس": "مدنين",        "حومة السوق": "مدنين",
+    "دقاش": "مدنين",         "دڤاش": "مدنين",      "بوقرارة": "مدنين",
     # تطاوين
     "تطاوين": "تطاوين",     "رمادة": "تطاوين",
     # قفصة
@@ -88,10 +89,12 @@ DELEGATION_WILAYA_MAP = {
     "توزر": "توزر",          "نفطة": "توزر",       "تمغزة": "توزر",
     # جندوبة
     "جندوبة": "جندوبة",      "بوسالم": "جندوبة",   "عين دراهم": "جندوبة",
-    "الفرنانة": "جندوبة",    "تبرسق": "جندوبة",
+    "الفرنانة": "جندوبة",    "تبرسق": "جندوبة",    "طبرقة": "جندوبة",
+    "غار الدماء": "جندوبة",  "جندوبة المدينة": "جندوبة",
     # باجة
     "باجة": "باجة",          "مجاز الباب": "باجة", "نفزة": "باجة",
-    "تيبار": "باجة",
+    "تيبار": "باجة",         "تستور": "باجة",       "عمدون": "باجة",
+    "قبلاط": "باجة",
 }
 
 # ── Patterns regex (fallback uniquement) ─────────────────────
@@ -245,6 +248,20 @@ class NLUModule:
         # Correction : si l'user mentionne une ville/délégation dans son texte,
         # on corrige wilaya et delegation (le ML prédit souvent "تونس" par défaut)
         entities = self._fix_location_from_text(text, entities)
+
+        # Cohérence ML : si aucune localisation explicite dans le texte mais que
+        # le ML a prédit une délégation présente dans la map, on corrige la wilaya.
+        # Exemple : ML prédit delegation="الشابة" wilaya="تونس" → on force wilaya="المهدية"
+        if not entities.get("location_explicit", False):
+            ml_deleg = entities.get("delegation", "")
+            if ml_deleg and ml_deleg in DELEGATION_WILAYA_MAP:
+                correct_wilaya = DELEGATION_WILAYA_MAP[ml_deleg]
+                if entities.get("wilaya") != correct_wilaya:
+                    logger.info(
+                        f"[NLU] Cohérence ML : wilaya '{entities.get('wilaya')}' → '{correct_wilaya}' "
+                        f"(délégation ML='{ml_deleg}' trouvée dans la map)"
+                    )
+                    entities["wilaya"] = correct_wilaya
 
         result = {
             # Champs NLU principaux

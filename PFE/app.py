@@ -59,6 +59,42 @@ except Exception as e:
 
 logger.info("✅ Modules prêts.")
 
+# ── Coqui TTS — chargement lazy (au premier appel /api/tts) ──
+_coqui_tts_instance = None   # initialisé à None, chargé à la demande
+
+def _get_coqui_tts():
+    """
+    Chargement lazy du modèle Coqui TTS.
+    - Si COQUI_TTS_CUSTOM_MODEL est défini dans config.py → utilise le modèle fine-tuné.
+    - Sinon → utilise le modèle arabe pré-entraîné (tts_models/ar/css10/vits).
+    Retourne None si la bibliothèque TTS n'est pas installée.
+    """
+    global _coqui_tts_instance
+    if _coqui_tts_instance is not None:
+        return _coqui_tts_instance
+    try:
+        from TTS.api import TTS as CoquiTTS
+        custom_model  = getattr(Config, "COQUI_TTS_CUSTOM_MODEL",  "")
+        custom_config = getattr(Config, "COQUI_TTS_CUSTOM_CONFIG", "")
+        if custom_model and os.path.isfile(custom_model):
+            logger.info(f"Coqui TTS : chargement modèle fine-tuné → {custom_model}")
+            _coqui_tts_instance = CoquiTTS(
+                model_path=custom_model,
+                config_path=custom_config or None,
+            )
+        else:
+            model_name = getattr(Config, "COQUI_TTS_MODEL", "tts_models/ar/css10/vits")
+            logger.info(f"Coqui TTS : chargement modèle standard → {model_name}")
+            _coqui_tts_instance = CoquiTTS(model_name)
+        logger.info("✅ Coqui TTS prêt.")
+        return _coqui_tts_instance
+    except ImportError:
+        logger.info("Coqui TTS non installé (pip install TTS) → fallback edge-tts/gTTS")
+        return None
+    except Exception as e:
+        logger.warning(f"Coqui TTS échec chargement : {e} → fallback edge-tts/gTTS")
+        return None
+
 # ── Sessions ──────────────────────────────────────────────────
 sessions = {}
 
@@ -185,7 +221,23 @@ def chat():
             user_text, nlu_intent=intent, nlu_service=service_type
         )
 
-        if clari["question"]:
+        # Double filtre avant de poser une question de clarification :
+        #  1. La confiance sémantique de la question doit être ≥ 0.50
+        #     (seuil élevé pour éviter les fausses questions hors-sujet)
+        #  2. La confiance NLU (ML) doit être ≥ 0.35
+        #     (si le NLU est incertain, le sujet n'est probablement pas dans le dataset)
+        # Si l'un des deux seuils n'est pas atteint → on passe directement à l'étape 2
+        # qui tentera une réponse directe ou déclenchera le transfert humain.
+        CLARI_MIN_CONF     = Config.CLARIFICATION_CONFIDENCE_THRESHOLD   # 0.50
+        NLU_MIN_CONF_CLARI = Config.NLU_MIN_CONFIDENCE_FOR_CLARI         # 0.35
+
+        clari_ok = (
+            clari["question"]
+            and clari["confidence"] >= CLARI_MIN_CONF
+            and ml_conf >= NLU_MIN_CONF_CLARI
+        )
+
+        if clari_ok:
             bot_resp = response_eng._strip_emojis(clari["question"])
 
             # Si la délégation n'est pas encore connue → la demander
@@ -218,13 +270,43 @@ def chat():
                                                  collected_entities=sess.get("collected_entities")),
             })
 
-        # Pas de question trouvée → répondre directement
+        # Question non trouvée OU double seuil non atteint (sujet hors dataset)
+        # → passer directement à l'étape 2 (réponse directe ou transfert humain)
+        logger.info(
+            f"[{sid}] ÉTAPE 1 ignorée "
+            f"(clari_conf={clari['confidence']:.3f} seuil={CLARI_MIN_CONF} | "
+            f"nlu_conf={ml_conf:.2f} seuil={NLU_MIN_CONF_CLARI}) "
+            f"→ passage direct ÉTAPE 2"
+        )
         sess["stage"]          = "responding"
         sess["pending_intent"] = intent
 
     # ── ÉTAPE 2 : Réponse finale (après clarification) ───────
     # active_intent = intent du RECORD (fiable) ou NLU si pas de record
     active_intent = sess.get("pending_intent") or intent
+
+    # ── Détection de négation : user répond "non" à la question de clarification ──
+    # Ex : Bot demande "عندك رقم المعاملة؟" → User répond "لا معنديش"
+    # Dans ce cas le dataset n'a pas de réponse → on guide vers l'agence
+    if stage == "clarifying" and _is_negation(user_text):
+        bot_resp = Config.NEGATION_CLARIFICATION_RESPONSE
+        sess["history"].append(("bot", bot_resp))
+        sess["stage"]          = "initial"
+        sess["pending_intent"] = ""
+        sess["solution_given"] = True   # active le remerciement au prochain tour
+        logger.info(f"[{sid}] Négation détectée → réponse alternative agence")
+        # Construire un rag_result factice pour l'analyse (حل تلقائي car on a une réponse)
+        _neg_rag = {"confidence": 1.0, "escalate": False,
+                    "issue_type": "", "service_type": "", "action": ""}
+        return jsonify({
+            "bot_response":  bot_resp,
+            "clarifying":    False,
+            "transferred":   False,
+            "session_ended": False,
+            "analysis":      _build_analysis(nlu_result, _neg_rag,
+                                             collected_entities=sess.get("collected_entities")),
+            "turn":          sess["turn"],
+        })
 
     # Construire la requête : problème original + réponse clarification
     enriched_query = _build_enriched_query(sess, user_text)
@@ -240,13 +322,35 @@ def chat():
     rag_conf     = rag_result.get("confidence", 0)
     rag_escalate = rag_result.get("escalate", False)
 
-    # Transférer uniquement si vraiment pas de réponse fiable
-    # et qu'on a déjà posé la question de clarification
-    should_transfer = (
-        rag_escalate
-        and active_intent in ("غير محدد", "unknown", "")
-        and sess["turn"] >= Config.ESCALATION_ATTEMPTS
-    )
+    # Seuil STRICT dans deux cas :
+    #  1. sess["stage"] == "responding" : étape 1 court-circuitée (hors-dataset)
+    #     → seuil = RAG_STRICT_THRESHOLD (0.45)
+    #  2. sess["stage"] == "clarifying" : user a répondu à la question de clarification
+    #     mais le RAG ne trouve toujours pas de solution fiable
+    #     → seuil = RAG_STRICT_THRESHOLD_AFTER_CLARI (0.60) — plus strict car l'user
+    #       a déjà fourni toutes les infos : si conf < 0.60 → le problème n'est pas
+    #       dans le dataset → transfert humain immédiat (évite la boucle infinie)
+    current_stage = sess.get("stage")
+    if current_stage == "responding":
+        strict_threshold = getattr(Config, "RAG_STRICT_THRESHOLD", 0.45)
+        if rag_conf < strict_threshold:
+            rag_escalate = True
+            logger.info(
+                f"[{sid}] Seuil strict (hors-dataset) : "
+                f"rag_conf={rag_conf:.3f} < {strict_threshold} → escalade forcée"
+            )
+    elif current_stage == "clarifying":
+        strict_threshold = getattr(Config, "RAG_STRICT_THRESHOLD_AFTER_CLARI", 0.60)
+        if rag_conf < strict_threshold:
+            rag_escalate = True
+            logger.info(
+                f"[{sid}] Seuil strict (après-clarification) : "
+                f"rag_conf={rag_conf:.3f} < {strict_threshold} → escalade forcée"
+            )
+
+    # Transférer dès que le RAG ne trouve pas de réponse fiable
+    # قرار الذكاء الاصطناعي → تحويل لوكيل بشري
+    should_transfer = rag_escalate
 
     if should_transfer:
         sess["transferred"] = True
@@ -257,21 +361,63 @@ def chat():
             rag_confidence=rag_conf,
         )
         sess["history"].append(("bot", bot_resp))
+        # Activer la détection de remerciement après le transfert
+        sess["stage"]          = "initial"
+        sess["pending_intent"] = ""
+        sess["solution_given"] = True
+        logger.info(
+            f"[{sid}] Transfert humain → intent='{active_intent}' "
+            f"rag_conf={rag_conf:.3f} escalate={rag_escalate}"
+        )
         return jsonify({
             "bot_response": bot_resp,
             "transferred":  True,
             "ticket_id":    ticket.get("ticket_id"),
             "analysis":     _build_analysis(nlu_result, rag_result,
-                                            collected_entities=sess.get("collected_entities")),
+                                            collected_entities=sess.get("collected_entities"),
+                                            transferred=True),
         })
 
     # ── Choisir la réponse ────────────────────────────────────
+    # قرار الذكاء الاصطناعي → حل تلقائي
     bot_resp = rag_result.get("response") or nlu_result.get("ml_response") or ""
     if not bot_resp:
         bot_resp = Config.NOT_UNDERSTOOD_MSG
 
     # Remplacer toute localisation du dataset par la localisation réelle de l'user
     bot_resp = _localize_response(bot_resp, sess.get("collected_entities"))
+
+    # ── Filet de sécurité : détection de boucle ──────────────
+    # Si le bot allait répéter EXACTEMENT la même réponse qu'au tour précédent
+    # → le RAG est bloqué sur le même record → transfert forcé vers agent humain.
+    # Couvre les cas où le seuil strict n'a pas suffi (réponse avec conf >= 0.60
+    # mais qui est quand même une réponse de clarification recyclée par le RAG).
+    last_bot_resp = next(
+        (t for role, t in reversed(sess.get("history", [])) if role == "bot"), ""
+    )
+    if last_bot_resp and bot_resp.strip() == last_bot_resp.strip():
+        logger.info(
+            f"[{sid}] BOUCLE DÉTECTÉE : bot allait répéter la même réponse → transfert forcé"
+        )
+        sess["transferred"] = True
+        bot_resp = Config.TRANSFER_MESSAGE
+        ticket = transfer.create_ticket(
+            session_id=sid, history=sess["history"],
+            user_last_text=user_text, nlu_result=nlu_result,
+            rag_confidence=rag_conf,
+        )
+        sess["history"].append(("bot", bot_resp))
+        sess["stage"]          = "initial"
+        sess["pending_intent"] = ""
+        sess["solution_given"] = True
+        return jsonify({
+            "bot_response": bot_resp,
+            "transferred":  True,
+            "ticket_id":    ticket.get("ticket_id"),
+            "analysis":     _build_analysis(nlu_result, rag_result,
+                                            collected_entities=sess.get("collected_entities"),
+                                            transferred=True),
+        })
 
     sess["history"].append(("bot", bot_resp))
     # Remettre en mode initial pour le prochain problème dans la même session
@@ -305,8 +451,10 @@ def tts_elevenlabs():
     """
     Génère l'audio du bot.
     Priorité :
-      1. ElevenLabs (voix masculine, meilleure qualité)  → si clé configurée
-      2. gTTS       (voix arabe, gratuite, serveur-side) → fallback automatique
+      0. Coqui TTS  (open-source, arabe/fine-tuning tunisien) → si installé
+      1. edge-tts   (voix neurale Microsoft ar-TN-ReemNeural)  → gratuit, hors-ligne
+      2. ElevenLabs (voix masculine, haute qualité)            → si clé configurée
+      3. gTTS       (voix arabe basique, fallback final)
     """
     data = request.get_json()
     text = (data.get("text") or "").strip()
@@ -315,6 +463,35 @@ def tts_elevenlabs():
 
     api_key  = Config.ELEVENLABS_API_KEY
     voice_id = Config.ELEVENLABS_VOICE_ID
+
+    # ── 0. Coqui TTS — open-source, arabe + fine-tuning tunisien ──
+    # pip install TTS  (une seule fois dans le terminal)
+    # Le modèle est téléchargé automatiquement au premier appel (~50 Mo)
+    try:
+        coqui = _get_coqui_tts()
+        if coqui is not None:
+            import tempfile, os as _os
+            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+                wav_path = tmp.name
+            speaker  = getattr(Config, "COQUI_TTS_SPEAKER",  None)
+            language = getattr(Config, "COQUI_TTS_LANGUAGE", None)
+            kwargs = {}
+            if speaker:
+                kwargs["speaker"] = speaker
+            if language:
+                kwargs["language"] = language
+            coqui.tts_to_file(text=text, file_path=wav_path, **kwargs)
+            with open(wav_path, "rb") as f:
+                wav_bytes = f.read()
+            _os.unlink(wav_path)
+            if wav_bytes:
+                model_used = getattr(Config, "COQUI_TTS_CUSTOM_MODEL", "") or \
+                             getattr(Config, "COQUI_TTS_MODEL", "coqui-ar")
+                logger.info(f"TTS via Coqui TTS ({model_used})")
+                return send_file(io.BytesIO(wav_bytes), mimetype="audio/wav",
+                                 as_attachment=False, download_name="response.wav")
+    except Exception as e:
+        logger.warning(f"Coqui TTS synthesis error: {e} → fallback edge-tts")
 
     # ── 1. edge-tts — voix neurale Microsoft (ar-TN-ReemNeural) ──
     # Gratuit, aucune clé requise, voix tunisienne très naturelle.
@@ -473,12 +650,21 @@ def voice():
         sess["turn"] += 1
         sess["history"].append(("user", transcript))
 
-        # Étape 1 : question
+        # Étape 1 : question — double filtre (confiance sémantique + confiance NLU)
+        CLARI_MIN_CONF     = Config.CLARIFICATION_CONFIDENCE_THRESHOLD   # 0.50
+        NLU_MIN_CONF_CLARI = Config.NLU_MIN_CONFIDENCE_FOR_CLARI         # 0.35
+        voice_ml_conf      = nlu_result.get("confidence", 0)
+
         if stage == "initial" and intent not in ("غير محدد", "unknown", ""):
             clari = response_eng.find_clarification_question(
                 transcript, nlu_intent=intent, nlu_service=service_type
             )
-            if clari["question"]:
+            clari_ok = (
+                clari["question"]
+                and clari["confidence"] >= CLARI_MIN_CONF
+                and voice_ml_conf >= NLU_MIN_CONF_CLARI
+            )
+            if clari_ok:
                 bot_resp = response_eng._strip_emojis(clari["question"])
 
                 # Si la délégation n'est pas encore connue → la demander en même temps
@@ -495,16 +681,122 @@ def voice():
                     "analysis":     _build_analysis(nlu_result, {}, clarifying=True,
                                                     collected_entities=sess.get("collected_entities")),
                 })
+            # Double seuil non atteint → passer à l'étape 2 (réponse directe ou transfert)
+            logger.info(
+                f"[{sid}] ÉTAPE 1 vocale ignorée "
+                f"(clari_conf={clari['confidence']:.3f} seuil={CLARI_MIN_CONF} | "
+                f"nlu_conf={voice_ml_conf:.2f} seuil={NLU_MIN_CONF_CLARI}) "
+                f"→ passage direct ÉTAPE 2"
+            )
 
         # Étape 2 : réponse
-        active_intent  = sess.get("pending_intent") or intent
-        enriched       = _build_enriched_query(sess, transcript)
-        rag_result     = response_eng.find_response(
+        active_intent = sess.get("pending_intent") or intent
+
+        # Détection de négation vocale : user répond "لا معنديش" à la clarification
+        if stage == "clarifying" and _is_negation(transcript):
+            bot_resp = Config.NEGATION_CLARIFICATION_RESPONSE
+            sess["history"].append(("bot", bot_resp))
+            sess["stage"]          = "initial"
+            sess["pending_intent"] = ""
+            sess["solution_given"] = True
+            logger.info(f"[{sid}] Négation vocale détectée → réponse alternative agence")
+            _neg_rag = {"confidence": 1.0, "escalate": False,
+                        "issue_type": "", "service_type": "", "action": ""}
+            return jsonify({
+                "transcript":   transcript,
+                "bot_response": bot_resp,
+                "analysis":     _build_analysis(nlu_result, _neg_rag,
+                                                collected_entities=sess.get("collected_entities")),
+            })
+
+        enriched   = _build_enriched_query(sess, transcript)
+        rag_result = response_eng.find_response(
             enriched, sess["history"], nlu_intent=active_intent)
+
+        rag_conf     = rag_result.get("confidence", 0)
+        rag_escalate = rag_result.get("escalate", False)
+
+        # Seuil strict dans deux cas :
+        #  1. stage == "responding" : étape 1 court-circuitée (hors-dataset) → seuil 0.45
+        #  2. stage == "clarifying" : user a répondu, RAG ne résout pas → seuil 0.60
+        #     Évite la boucle infinie (même question redemandée au tour suivant)
+        current_stage_v = sess.get("stage")
+        if current_stage_v == "responding":
+            strict_threshold = getattr(Config, "RAG_STRICT_THRESHOLD", 0.45)
+            if rag_conf < strict_threshold:
+                rag_escalate = True
+                logger.info(
+                    f"[{sid}] Seuil strict voice (hors-dataset) : "
+                    f"rag_conf={rag_conf:.3f} < {strict_threshold} → escalade forcée"
+                )
+        elif current_stage_v == "clarifying":
+            strict_threshold = getattr(Config, "RAG_STRICT_THRESHOLD_AFTER_CLARI", 0.60)
+            if rag_conf < strict_threshold:
+                rag_escalate = True
+                logger.info(
+                    f"[{sid}] Seuil strict voice (après-clarification) : "
+                    f"rag_conf={rag_conf:.3f} < {strict_threshold} → escalade forcée"
+                )
+
+        # Transfert humain si le RAG ne trouve pas de réponse fiable
+        # قرار الذكاء الاصطناعي → تحويل لوكيل بشري
+        if rag_escalate:
+            sess["transferred"] = True
+            bot_resp = Config.TRANSFER_MESSAGE
+            ticket   = transfer.create_ticket(
+                session_id=sid, history=sess["history"],
+                user_last_text=transcript, nlu_result=nlu_result,
+                rag_confidence=rag_conf,
+            )
+            sess["history"].append(("bot", bot_resp))
+            sess["stage"]          = "initial"
+            sess["pending_intent"] = ""
+            sess["solution_given"] = True
+            logger.info(f"[{sid}] Transfert humain (voice) → rag_conf={rag_conf:.3f}")
+            return jsonify({
+                "transcript":   transcript,
+                "bot_response": bot_resp,
+                "transferred":  True,
+                "ticket_id":    ticket.get("ticket_id"),
+                "analysis":     _build_analysis(nlu_result, rag_result,
+                                                collected_entities=sess.get("collected_entities"),
+                                                transferred=True),
+            })
+
+        # قرار الذكاء الاصطناعي → حل تلقائي
         bot_resp = rag_result.get("response") or nlu_result.get("ml_response") or Config.NOT_UNDERSTOOD_MSG
 
         # Remplacer toute localisation du dataset par la localisation réelle de l'user
         bot_resp = _localize_response(bot_resp, sess.get("collected_entities"))
+
+        # ── Filet de sécurité : détection de boucle (voice) ──
+        last_bot_resp_v = next(
+            (t for role, t in reversed(sess.get("history", [])) if role == "bot"), ""
+        )
+        if last_bot_resp_v and bot_resp.strip() == last_bot_resp_v.strip():
+            logger.info(
+                f"[{sid}] BOUCLE DÉTECTÉE (voice) : même réponse → transfert forcé"
+            )
+            sess["transferred"] = True
+            bot_resp = Config.TRANSFER_MESSAGE
+            ticket = transfer.create_ticket(
+                session_id=sid, history=sess["history"],
+                user_last_text=transcript, nlu_result=nlu_result,
+                rag_confidence=rag_conf,
+            )
+            sess["history"].append(("bot", bot_resp))
+            sess["stage"]          = "initial"
+            sess["pending_intent"] = ""
+            sess["solution_given"] = True
+            return jsonify({
+                "transcript":   transcript,
+                "bot_response": bot_resp,
+                "transferred":  True,
+                "ticket_id":    ticket.get("ticket_id"),
+                "analysis":     _build_analysis(nlu_result, rag_result,
+                                                collected_entities=sess.get("collected_entities"),
+                                                transferred=True),
+            })
 
         sess["history"].append(("bot", bot_resp))
         sess["stage"]          = "initial"
@@ -564,8 +856,17 @@ def stats():
         has_gtts = True
     except ImportError:
         has_gtts = False
+    try:
+        from TTS.api import TTS as _CTTS   # noqa
+        has_coqui = True
+    except ImportError:
+        has_coqui = False
 
-    if has_edge_tts:
+    if has_coqui:
+        custom = getattr(Config, "COQUI_TTS_CUSTOM_MODEL", "")
+        model_lbl = os.path.basename(custom) if custom else getattr(Config, "COQUI_TTS_MODEL", "ar/css10/vits")
+        tts_engine = f"Coqui TTS ({model_lbl})"
+    elif has_edge_tts:
         tts_engine = f"edge-tts ({getattr(Config, 'EDGE_TTS_VOICE', 'ar-TN-ReemNeural')})"
     elif has_elevenlabs:
         tts_engine = "ElevenLabs"
@@ -578,6 +879,7 @@ def stats():
         "ml_active":      ml_predictor.is_available,
         "ml_backend":     ml_predictor.backend_name,
         "whisper_active": stt_model is not None,
+        "coqui_tts":      has_coqui,
         "elevenlabs":     has_elevenlabs,
         "gtts":           has_gtts,
         "tts_engine":     tts_engine,
@@ -597,13 +899,17 @@ def pending_tickets():
 #  Utilitaires
 # ════════════════════════════════════════════════════════════
 
-def _build_analysis(nlu_result, rag_result, clarifying=False, collected_entities=None):
+def _build_analysis(nlu_result, rag_result, clarifying=False, collected_entities=None,
+                    transferred=False):
     """
     Construit le dict d'analyse pour le frontend.
 
     collected_entities : entités accumulées sur toute la session
     (wilaya, delegation, service détectés dans les tours précédents).
     Utilisées en fallback quand le message courant ne contient pas de localisation.
+
+    transferred : True  → forcer قرار = تحويل لوكيل بشري (boucle détectée,
+                          seuil strict, etc.) même si rag_result["escalate"]=False.
     """
     curr     = nlu_result.get("entities", {})
     acc      = collected_entities or {}
@@ -619,19 +925,29 @@ def _build_analysis(nlu_result, rag_result, clarifying=False, collected_entities
         # Pour les autres : préférer le courant, fallback accumulé
         return curr.get(key) or acc.get(key) or ""
 
+    # Wilaya / délégation : "غير محدد" si non détectées
+    wilaya     = _pick("wilaya")     or "غير محدد"
+    delegation = _pick("delegation") or "غير محدد"
+
+    # قرار الذكاء الاصطناعي : تحويل لوكيل بشري si :
+    #   - transferred=True (boucle détectée, seuil strict post-clarification…)
+    #   - OU rag_result["escalate"] = True (RAG normal escalation)
+    escalate = transferred or (rag_result or {}).get("escalate", False)
+    decision = "escalade_agent_humain" if escalate else "reponse_automatique"
+
     return {
         "intent":           nlu_result.get("intent", ""),
         "confidence_nlu":   round(nlu_result.get("confidence", 0) * 100),
         "confidence_rag":   round((rag_result or {}).get("confidence", 0) * 100),
         "sentiment":        nlu_result.get("sentiment", "محايد"),
         "service_type":     _pick("service_type") or (rag_result or {}).get("service_type", ""),
-        "wilaya":           _pick("wilaya"),
-        "delegation":       _pick("delegation"),
+        "wilaya":           wilaya,
+        "delegation":       delegation,
         "action":           nlu_result.get("action") or (rag_result or {}).get("action", ""),
-        "decision":         nlu_result.get("decision", "reponse_automatique"),
+        "decision":         decision,
         "ml_used":          nlu_result.get("ml_used", False),
         "ml_backend":       nlu_result.get("backend", ml_predictor.backend_name),
-        "escalate":         (rag_result or {}).get("escalate", False),
+        "escalate":         escalate,
         "clarifying":       clarifying,
     }
 
@@ -771,6 +1087,56 @@ def _is_thanks(text):
     norm = _normalize_for_keyword_match(text)
     keys_norm = [_normalize_for_keyword_match(k) for k in Config.THANKS_KEYWORDS]
     return bool(re.search("|".join(re.escape(k) for k in keys_norm), norm, re.IGNORECASE))
+
+
+def _is_negation(text):
+    """
+    Vérifie si le texte est une réponse négative (refus / absence d'info)
+    à une question de clarification.
+
+    Ex: "لا معنديش", "ماعنديش", "مانجمش", "non"…
+
+    Stratégie en 2 passes :
+      1. AFFIRMATION en premier : si l'user dit "إي"/"نعم"/"أيوا"…
+         → return False immédiatement (il confirme, pas de négation).
+         Évite le faux positif classique "إي نعم، لومبة لوس تشعل بالأحمر"
+         où "بالأحمر" → "بالاحمر" après normalisation alef, et contient
+         la sous-chaîne "لا" (ل+ا) sans être une vraie négation.
+
+      2. NÉGATION avec word-boundary pour les mots courts (≤ 4 chars) :
+         "لا" ne matche PAS à l'intérieur de "بالاحمر", "بلاصة", "غلا"…
+         Les phrases longues sont matchées normalement (assez spécifiques).
+    """
+    norm = _normalize_for_keyword_match(text)
+
+    # ── Passe 1 : affirmation → court-circuit ────────────────
+    affirm_keys = [_normalize_for_keyword_match(k)
+                   for k in getattr(Config, "AFFIRMATION_KEYWORDS", [])]
+    if affirm_keys:
+        pat_affirm = "|".join(re.escape(k) for k in affirm_keys if k)
+        if pat_affirm and re.search(pat_affirm, norm, re.IGNORECASE):
+            return False   # L'user a dit OUI → pas une négation
+
+    # ── Passe 2 : négation ───────────────────────────────────
+    # Séparateurs de mots en arabe/latin : espace, ponctuation, début/fin
+    SEP = r'(?:^|[\s،؟\.!؛،\(\)\[\]\-،])'
+    END = r'(?=$|[\s،؟\.!؛،\(\)\[\]\-،])'
+
+    keys_norm = [_normalize_for_keyword_match(k) for k in Config.NEGATION_KEYWORDS]
+    patterns = []
+    for k in keys_norm:
+        if not k:
+            continue
+        if len(k) <= 4:
+            # Mot court : imposer les frontières de mot pour éviter les faux positifs
+            patterns.append(SEP + re.escape(k) + END)
+        else:
+            # Phrase longue : pas de frontière nécessaire (assez spécifique)
+            patterns.append(re.escape(k))
+
+    if not patterns:
+        return False
+    return bool(re.search("|".join(patterns), norm, re.IGNORECASE))
 
 
 if __name__ == "__main__":

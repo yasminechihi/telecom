@@ -305,6 +305,31 @@ class ResponseEngine:
         if not self.problem_index or not query.strip():
             return {"question": "", "confidence": 0.0, "intent": "", "matched_idx": -1}
 
+        # ── GATE GLOBAL (sans préfixe intent) ─────────────────────────────────
+        # On encode la requête BRUTE (sans intent) pour obtenir un score non-biaisé.
+        # Si le meilleur score brut est trop bas → la requête est hors-dataset
+        # → on ne pose aucune question de clarification (transfer en étape 2).
+        #
+        # Pourquoi c'est nécessaire :
+        #   Avec le préfixe intent ("استفسار_عروض خطي مقصوص"), le score
+        #   est artificiellement élevé si l'intent est faux (NLU 26% conf).
+        #   La requête brute donne un score honnête de la pertinence réelle.
+        raw_emb = self.model.encode(
+            [query], normalize_embeddings=True
+        ).astype("float32")
+        raw_scores, _ = self.problem_index.search(raw_emb, 1)
+        raw_best_score = float(raw_scores[0][0]) if raw_scores[0].size > 0 else 0.0
+
+        RAW_MIN_SCORE = getattr(self.config, "CLARIFICATION_CONFIDENCE_THRESHOLD", 0.50)
+        if raw_best_score < RAW_MIN_SCORE:
+            logger.info(
+                f"find_clarification GATE: hors dataset "
+                f"(raw_best={raw_best_score:.3f} < seuil={RAW_MIN_SCORE}) → pas de question"
+            )
+            return {"question": "", "confidence": raw_best_score,
+                    "intent": "", "matched_idx": -1}
+        # ────────────────────────────────────────────────────────────────────────
+
         # Si l'intent NLU est disponible et fiable (non vide, non "غير محدد"),
         # on le préfixe dans la requête d'embedding.
         # L'index a été construit avec le même préfixe issue_type → meilleure cohérence.
