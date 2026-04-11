@@ -916,6 +916,10 @@ async function sendMessage() {
       setBotStatus('محوّل لوكيل بشري');
       document.getElementById('msgInput').disabled = true;
       document.getElementById('btnSend').disabled  = true;
+    } else if (d.learned_response) {
+      // Réponse issue de l'apprentissage éphémère de session
+      setBotStatus('🧠 تعلّم مؤقت');
+      setTimeout(() => setBotStatus('متصل — En ligne'), 3000);
     } else if (d.session_ended) {
       setBotStatus('الجلسة منتهية');
       document.getElementById('msgInput').disabled = true;
@@ -981,8 +985,16 @@ function updateAnalysis(a) {
   if (a.decision === 'escalade_agent_humain' || a.escalate) {
     badge.className = 'decision-badge decision-escalade';
     dtext.innerHTML = '<i class="fas fa-headset"></i> تحويل لوكيل بشري';
+  } else if (a.action === 'تعلم من وكيل بشري') {
+    badge.className = 'decision-badge';
+    badge.style.cssText = '';
+    badge.style.background = 'rgba(245,158,11,0.12)';
+    badge.style.color = '#ffc107';
+    badge.style.border = '1px solid rgba(245,158,11,0.3)';
+    dtext.innerHTML = '<i class="fas fa-brain"></i> تعلّم مؤقت (كل الجلسات)';
   } else {
     badge.className = 'decision-badge decision-auto';
+    badge.style.cssText = '';
     dtext.innerHTML = '<i class="fas fa-circle-check"></i> حل تلقائي';
   }
 
@@ -1075,10 +1087,28 @@ async function sendVoice() {
     if (d.transcript) {
       appendMessage('user', '🎙️ ' + d.transcript);
       appendMessage('bot', d.bot_response);
-      speakBotResponse(d.bot_response);   // 🔊
+      speakBotResponse(d.bot_response);
       updateAnalysis(d.analysis || {});
       totalTurns++;
       document.getElementById('statTurns').textContent = totalTurns;
+
+      // ── Même gestion d'état que sendMessage() ──────────────
+      if (d.transferred) {
+        currentTicketId = d.ticket_id;
+        document.getElementById('transferBanner').classList.add('show');
+        setBotStatus('محوّل لوكيل بشري');
+        document.getElementById('msgInput').disabled  = true;
+        document.getElementById('btnSend').disabled   = true;
+      } else if (d.learned_response) {
+        setBotStatus('🧠 تعلّم مؤقت');
+        setTimeout(() => setBotStatus('متصل — En ligne'), 3000);
+      } else if (d.session_ended) {
+        setBotStatus('الجلسة منتهية');
+        document.getElementById('msgInput').disabled  = true;
+        document.getElementById('btnSend').disabled   = true;
+      } else {
+        setBotStatus('متصل — En ligne');
+      }
     }
     document.getElementById('inputHint').innerHTML =
       '<i class="fas fa-info-circle"></i> اكتب رسالتك أو استخدم الميكروفون — اضغط Enter للإرسال';
@@ -1114,13 +1144,33 @@ async function submitHumanResponse() {
     const d = await r.json();
     closeHumanModal();
 
+    // 1. Afficher la réponse de l'agent humain dans le chat
     appendMessage('bot', text);
     speakBotResponse(text);
-    appendMessage('bot', '✅ تم التعلم من رد الوكيل البشري وحفظه في قاعدة البيانات.');
+
+    // 2. Message de confirmation — apprentissage éphémère (session uniquement)
+    const learnNote = document.createElement('div');
+    learnNote.style.cssText =
+      'margin:6px 20px;padding:10px 14px;' +
+      'background:rgba(245,158,11,0.08);border:1px solid rgba(245,158,11,0.25);' +
+      'border-radius:10px;font-size:0.8rem;color:#ffc107;text-align:center;direction:rtl;';
+    learnNote.innerHTML =
+      '🧠 <strong>تعلّم مؤقت (كل الجلسات)</strong> — ' +
+      'يمكنك فتح جلسة جديدة والبوت سيجيب مباشرة بدون تحويل. ' +
+      '<span style="color:#8892b0;font-size:0.75rem;">' +
+      '(يُنسى عند إعادة تشغيل السيرفر)</span>';
+    document.getElementById('chatMessages').appendChild(learnNote);
+    document.getElementById('chatMessages').scrollTop =
+      document.getElementById('chatMessages').scrollHeight;
+
+    // 3. Masquer le bandeau de transfert
     document.getElementById('transferBanner').classList.remove('show');
-    document.getElementById('msgInput').disabled = true;
-    document.getElementById('btnSend').disabled  = true;
-    setBotStatus('جلسة منتهية — تم التعلم');
+
+    // 4. Réactiver le chat pour permettre de tester la réponse apprise
+    document.getElementById('msgInput').disabled = false;
+    document.getElementById('btnSend').disabled  = false;
+    document.getElementById('msgInput').focus();
+    setBotStatus('✅ تعلّم مؤقت — يمكنك الاختبار');
 
     document.getElementById('humanResponseText').value = '';
     loadStats();

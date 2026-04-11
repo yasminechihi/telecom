@@ -98,6 +98,11 @@ def _get_coqui_tts():
 # ── Sessions ──────────────────────────────────────────────────
 sessions = {}
 
+# ── Apprentissage global (toutes sessions, perdu au redémarrage) ──────────────
+# Réponses apprises des agents humains — partagées entre toutes les sessions
+# tant que le serveur tourne. Oublié dès que le serveur est redémarré.
+_global_learned_responses = []   # liste de {problem_text, response_text, embedding}
+
 def get_session(sid: str) -> dict:
     if sid not in sessions:
         sessions[sid] = {
@@ -111,8 +116,161 @@ def get_session(sid: str) -> dict:
             "collected_entities": {},
             "solution_given":   False,  # True après qu'une réponse finale a été fournie
             "start":            datetime.now().isoformat(),
+            # ── Apprentissage éphémère (session uniquement) ──────────────
+            # Liste de {problem_text, response_text, embedding} appris depuis
+            # les réponses d'agents humains DANS cette session.
+            # Oublié dès la fermeture de session ou le redémarrage de l'app.
+            "session_learned_responses": [],
+            "last_transferred_problem":  "",  # texte du problème qui a déclenché le dernier transfert
         }
     return sessions[sid]
+
+# ════════════════════════════════════════════════════════════
+#  Apprentissage éphémère (session uniquement)
+# ════════════════════════════════════════════════════════════
+
+def _session_learn_store(sess, problem_text, response_text):
+    """
+    Stocke une réponse apprise dans DEUX niveaux :
+      1. Store global (_global_learned_responses) : partagé entre toutes les sessions,
+         persiste tant que le serveur tourne, oublié au redémarrage.
+      2. Store session (sess["session_learned_responses"]) : pour compatibilité.
+
+    TOUJOURS stocke le texte, et TENTE d'ajouter l'embedding en bonus.
+    """
+    global _global_learned_responses
+
+    entry = {
+        "problem_text":  problem_text.strip(),
+        "response_text": response_text.strip(),
+        "embedding":     None,   # sera ajouté si le modèle est dispo
+    }
+
+    # Tenter d'ajouter l'embedding (optionnel, améliore la détection des reformulations)
+    if response_eng.model is not None:
+        try:
+            entry["embedding"] = response_eng.model.encode([problem_text])[0]
+            logger.info(
+                f"[Global Learning] Embedding calculé pour '{problem_text[:50]}'"
+            )
+        except Exception as _e:
+            logger.warning(f"[Global Learning] Embedding échoué (text-only mode) : {_e}")
+    else:
+        logger.warning("[Global Learning] Modèle embedding None — stockage texte seulement")
+
+    # ── Niveau 1 : store global (toutes sessions) ──────────────
+    _global_learned_responses.append(entry)
+    logger.info(
+        f"[Global Learning] ✅ Réponse mémorisée (global #{len(_global_learned_responses)}) : "
+        f"'{problem_text[:50]}' → '{response_text[:50]}'"
+    )
+
+    # ── Niveau 2 : store session (compatibilité) ───────────────
+    sess.setdefault("session_learned_responses", []).append(entry)
+    logger.info(
+        f"[Global Learning] ✅ Aussi dans session #{len(sess['session_learned_responses'])}"
+    )
+
+
+def _find_session_learned_response(sess, query_text):
+    """
+    Cherche si query_text correspond à un problème déjà résolu par un agent
+    humain DANS CETTE SESSION.
+
+    Stratégie multi-couches (du plus fiable au plus souple) :
+      1. Correspondance exacte (score 1.0)
+      2. Sous-chaîne (score 0.92)
+      3. Recoupement de mots-clés ≥ 2 mots (score proportionnel)
+      4. Similarité cosinus embedding ≥ 0.62
+
+    Retourne la réponse apprise ou None.
+    Oublié au redémarrage du serveur (in-memory uniquement).
+    """
+    # ── Priorité au store global : contient les réponses de TOUTES les sessions ──
+    # Si vide, fallback sur le store session (compatibilité)
+    learned = _global_learned_responses or sess.get("session_learned_responses", [])
+    if not learned:
+        return None
+
+    logger.info(
+        f"[Global Learning] Vérification : {len(learned)} réponse(s) en mémoire globale "
+        f"pour query='{query_text[:50]}'"
+    )
+
+    import numpy as np
+
+    # Pré-calculer l'embedding de la requête une seule fois (si modèle dispo)
+    q_emb = None
+    if response_eng.model is not None:
+        try:
+            q_emb = response_eng.model.encode([query_text])[0]
+        except Exception as _e:
+            logger.warning(f"[Global Learning] Erreur encoding requête : {_e}")
+
+    best_score, best_resp, best_problem, best_method = 0.0, None, "", "—"
+
+    for entry in learned:
+        problem = entry.get("problem_text", "").strip()
+        resp    = entry.get("response_text", "")
+        if not problem or not resp:
+            continue
+
+        score, method = 0.0, "none"
+
+        # ── Couche 1 : correspondance exacte ─────────────────
+        if query_text.strip() == problem:
+            score, method = 1.0, "exact"
+
+        # ── Couche 2 : sous-chaîne ────────────────────────────
+        elif problem in query_text or query_text in problem:
+            score, method = 0.92, "substring"
+
+        else:
+            # ── Couche 3 : recoupement de mots-clés ──────────
+            q_words = set(w for w in query_text.split() if len(w) > 2)
+            p_words = set(w for w in problem.split()       if len(w) > 2)
+            common  = q_words & p_words
+            if len(common) >= 2 and max(len(q_words), len(p_words), 1):
+                kw_score = len(common) / max(len(q_words), len(p_words))
+                kw_final = min(0.90, kw_score * 1.1)   # légère amplification
+                if kw_final > score:
+                    score, method = kw_final, f"keywords({len(common)})"
+
+            # ── Couche 4 : similarité cosinus (embedding) ────
+            if q_emb is not None:
+                emb = entry.get("embedding")
+                if emb is not None:
+                    try:
+                        norm = (float(np.linalg.norm(q_emb)) *
+                                float(np.linalg.norm(emb))) + 1e-9
+                        cos  = float(np.dot(q_emb, emb)) / norm
+                        if cos > score:
+                            score, method = cos, f"cosine({cos:.3f})"
+                    except Exception:
+                        pass
+
+        logger.info(
+            f"[Global Learning]   score={score:.3f} ({method}) "
+            f"'{query_text[:30]}' vs '{problem[:30]}'"
+        )
+
+        if score > best_score:
+            best_score, best_resp   = score, resp
+            best_problem, best_method = problem, method
+
+    THRESHOLD = 0.62
+    if best_score >= THRESHOLD and best_resp:
+        logger.info(
+            f"[Global Learning] ✅ MATCH ! score={best_score:.3f} "
+            f"method={best_method} problem='{best_problem[:50]}'"
+        )
+        return best_resp
+
+    logger.info(
+        f"[Global Learning] ❌ Aucune correspondance "
+        f"(meilleur={best_score:.3f} < {THRESHOLD})"
+    )
+    return None
 
 # ════════════════════════════════════════════════════════════
 #  ROUTES
@@ -216,6 +374,28 @@ def chat():
 
     # ── ÉTAPE 1 : Première plainte → poser une QUESTION ──────
     if stage == "initial":
+        # ── Apprentissage éphémère : vérifier d'abord si ce problème a déjà été
+        # résolu par un agent humain DANS CETTE SESSION ──────────────────────────
+        _session_resp = _find_session_learned_response(sess, user_text)
+        if _session_resp:
+            bot_resp = _localize_response(_session_resp, sess.get("collected_entities"))
+            sess["history"].append(("bot", bot_resp))
+            sess["solution_given"] = True
+            logger.info(f"[{sid}] Réponse éphémère (apprentissage session) utilisée")
+            return jsonify({
+                "bot_response":     bot_resp,
+                "transferred":      False,
+                "session_ended":    False,
+                "learned_response": True,
+                "analysis":         _build_analysis(
+                    nlu_result,
+                    {"confidence": 1.0, "escalate": False,
+                     "issue_type": intent, "service_type": service_type,
+                     "action": "تعلم من وكيل بشري"},
+                    collected_entities=sess.get("collected_entities"),
+                ),
+            })
+
         # Chercher la question dans le dataset via similarité sémantique pure
         clari = response_eng.find_clarification_question(
             user_text, nlu_intent=intent, nlu_service=service_type
@@ -285,6 +465,7 @@ def chat():
                 f"→ transfert humain immédiat"
             )
             sess["transferred"] = True
+            sess["last_transferred_problem"] = user_text   # pour apprentissage session
             bot_resp = Config.TRANSFER_MESSAGE
             ticket = transfer.create_ticket(
                 session_id=sid, history=sess["history"],
@@ -303,13 +484,45 @@ def chat():
                                                 unknown_problem=True),
             })
 
-        # Problème potentiellement connu mais seuil NLU/clari non atteint
-        # → passer directement à l'étape 2 (réponse directe ou transfert humain)
+        # ── NOUVEAU : clari confidence < seuil → problème HORS DATASET ─────────
+        # Même si le NLU a détecté un intent avec confiance correcte, si le RAG
+        # ne trouve pas de question de clarification pertinente (conf < 0.50),
+        # c'est que le problème N'EXISTE PAS dans le dataset.
+        # → Transférer immédiatement au lieu de donner une réponse erronée.
+        if clari["confidence"] < CLARI_MIN_CONF:
+            logger.info(
+                f"[{sid}] Problème HORS DATASET "
+                f"(clari_conf={clari['confidence']:.3f} < seuil={CLARI_MIN_CONF} | "
+                f"intent='{intent}' nlu_conf={ml_conf:.2f}) "
+                f"→ transfert humain immédiat"
+            )
+            sess["transferred"] = True
+            sess["last_transferred_problem"] = user_text   # pour apprentissage session
+            bot_resp = Config.TRANSFER_MESSAGE
+            ticket = transfer.create_ticket(
+                session_id=sid, history=sess["history"],
+                user_last_text=user_text, nlu_result=nlu_result,
+                rag_confidence=clari["confidence"],
+            )
+            sess["history"].append(("bot", bot_resp))
+            sess["stage"]          = "initial"
+            sess["pending_intent"] = ""
+            sess["solution_given"] = True
+            return jsonify({
+                "bot_response": bot_resp,
+                "transferred":  True,
+                "ticket_id":    ticket.get("ticket_id"),
+                "analysis":     _build_analysis(nlu_result, {},
+                                                unknown_problem=True),
+            })
+
+        # Seuil NLU bas mais question de clarification trouvée avec confiance suffisante
+        # (clari_conf >= 0.50 mais ml_conf < 0.35) → tenter réponse directe avec seuil strict
         logger.info(
-            f"[{sid}] ÉTAPE 1 ignorée "
+            f"[{sid}] ÉTAPE 1 ignorée (NLU bas) "
             f"(clari_conf={clari['confidence']:.3f} seuil={CLARI_MIN_CONF} | "
             f"nlu_conf={ml_conf:.2f} seuil={NLU_MIN_CONF_CLARI}) "
-            f"→ passage direct ÉTAPE 2"
+            f"→ passage direct ÉTAPE 2 (seuil strict RAG appliqué)"
         )
         sess["stage"]          = "responding"
         sess["pending_intent"] = intent
@@ -322,6 +535,8 @@ def chat():
     # قرار الذكاء الاصطناعي → تحويل لوكيل بشري immédiat
     if stage == "waiting_for_request_number":
         sess["transferred"] = True
+        # Mémoriser le problème ORIGINAL (pas le numéro fourni) pour l'apprentissage session
+        sess["last_transferred_problem"] = sess.get("original_problem") or user_text
         bot_resp = Config.TRANSFER_MESSAGE
         ticket = transfer.create_ticket(
             session_id=sid, history=sess["history"],
@@ -422,6 +637,8 @@ def chat():
 
     if should_transfer:
         sess["transferred"] = True
+        # Mémoriser le problème original pour l'apprentissage éphémère de session
+        sess["last_transferred_problem"] = sess.get("original_problem") or user_text
         bot_resp = Config.TRANSFER_MESSAGE
         ticket   = transfer.create_ticket(
             session_id=sid, history=sess["history"],
@@ -472,6 +689,7 @@ def chat():
             f"[{sid}] BOUCLE DÉTECTÉE : bot allait répéter la même réponse → transfert forcé"
         )
         sess["transferred"] = True
+        sess["last_transferred_problem"] = sess.get("original_problem") or user_text
         bot_resp = Config.TRANSFER_MESSAGE
         ticket = transfer.create_ticket(
             session_id=sid, history=sess["history"],
@@ -735,6 +953,28 @@ def voice():
         voice_ml_conf      = nlu_result.get("confidence", 0)
 
         if stage == "initial":
+            # ── Apprentissage éphémère vocal : réponse déjà apprise dans cette session ──
+            _session_resp_v = _find_session_learned_response(sess, transcript)
+            if _session_resp_v:
+                bot_resp_v = _localize_response(_session_resp_v, sess.get("collected_entities"))
+                sess["history"].append(("bot", bot_resp_v))
+                sess["solution_given"] = True
+                logger.info(f"[{sid}] (vocal) Réponse éphémère (apprentissage session) utilisée")
+                return jsonify({
+                    "transcript":       transcript,
+                    "bot_response":     bot_resp_v,
+                    "transferred":      False,
+                    "session_ended":    False,
+                    "learned_response": True,
+                    "analysis":         _build_analysis(
+                        nlu_result,
+                        {"confidence": 1.0, "escalate": False,
+                         "issue_type": intent, "service_type": service_type,
+                         "action": "تعلم من وكيل بشري"},
+                        collected_entities=sess.get("collected_entities"),
+                    ),
+                })
+
             clari = response_eng.find_clarification_question(
                 transcript, nlu_intent=intent, nlu_service=service_type
             )
@@ -750,6 +990,39 @@ def voice():
                     f"→ transfert humain immédiat"
                 )
                 sess["transferred"] = True
+                sess["last_transferred_problem"] = transcript   # apprentissage session
+                bot_resp_v = Config.TRANSFER_MESSAGE
+                ticket = transfer.create_ticket(
+                    session_id=sid, history=sess["history"],
+                    user_last_text=transcript, nlu_result=nlu_result,
+                    rag_confidence=clari["confidence"],
+                )
+                sess["history"].append(("bot", bot_resp_v))
+                sess["stage"]          = "initial"
+                sess["pending_intent"] = ""
+                sess["solution_given"] = True
+                return jsonify({
+                    "transcript":   transcript,
+                    "bot_response": bot_resp_v,
+                    "transferred":  True,
+                    "ticket_id":    ticket.get("ticket_id"),
+                    "analysis":     _build_analysis(nlu_result, {},
+                                                    unknown_problem=True),
+                })
+
+            # ── NOUVEAU (vocal) : clari confidence < seuil → problème HORS DATASET ──
+            # Même si le NLU détecte un intent, si le RAG ne trouve pas de question
+            # pertinente (conf < 0.50) → le problème n'est pas dans le dataset
+            # → transfert immédiat (évite une réponse erronée du dataset)
+            if clari["confidence"] < CLARI_MIN_CONF:
+                logger.info(
+                    f"[{sid}] (vocal) Problème HORS DATASET "
+                    f"(clari_conf={clari['confidence']:.3f} < seuil={CLARI_MIN_CONF} | "
+                    f"intent='{intent}' nlu_conf={voice_ml_conf:.2f}) "
+                    f"→ transfert humain immédiat"
+                )
+                sess["transferred"] = True
+                sess["last_transferred_problem"] = transcript   # apprentissage session
                 bot_resp_v = Config.TRANSFER_MESSAGE
                 ticket = transfer.create_ticket(
                     session_id=sid, history=sess["history"],
@@ -784,7 +1057,8 @@ def voice():
                     bot_resp += "  " + Config.DELEGATION_QUESTION.format(wilaya=w)
 
                 sess["stage"]          = "clarifying"
-                sess["pending_intent"] = intent
+                sess["pending_intent"] = clari.get("intent") or intent
+                sess["original_problem"] = transcript   # mémoriser pour apprentissage session
                 sess["history"].append(("bot", bot_resp))
                 return jsonify({
                     "transcript":   transcript,
@@ -792,12 +1066,12 @@ def voice():
                     "analysis":     _build_analysis(nlu_result, {}, clarifying=True,
                                                     collected_entities=sess.get("collected_entities")),
                 })
-            # Double seuil non atteint → passer à l'étape 2 (réponse directe ou transfert)
+            # Seuil NLU bas mais clari trouvée → passer à l'étape 2 avec seuil strict
             logger.info(
-                f"[{sid}] ÉTAPE 1 vocale ignorée "
+                f"[{sid}] ÉTAPE 1 vocale ignorée (NLU bas) "
                 f"(clari_conf={clari['confidence']:.3f} seuil={CLARI_MIN_CONF} | "
                 f"nlu_conf={voice_ml_conf:.2f} seuil={NLU_MIN_CONF_CLARI}) "
-                f"→ passage direct ÉTAPE 2"
+                f"→ passage direct ÉTAPE 2 (seuil strict RAG appliqué)"
             )
 
         # Étape 2 : réponse
@@ -806,6 +1080,8 @@ def voice():
         # ── Détection numéro de demande vocal → transfert humain forcé ──
         if stage == "waiting_for_request_number":
             sess["transferred"] = True
+            # Mémoriser le problème ORIGINAL (pas le numéro fourni) pour l'apprentissage session
+            sess["last_transferred_problem"] = sess.get("original_problem") or transcript
             bot_resp = Config.TRANSFER_MESSAGE
             ticket = transfer.create_ticket(
                 session_id=sid, history=sess["history"],
@@ -886,6 +1162,7 @@ def voice():
         # قرار الذكاء الاصطناعي → تحويل لوكيل بشري
         if rag_escalate:
             sess["transferred"] = True
+            sess["last_transferred_problem"] = sess.get("original_problem") or transcript
             bot_resp = Config.TRANSFER_MESSAGE
             ticket   = transfer.create_ticket(
                 session_id=sid, history=sess["history"],
@@ -922,6 +1199,7 @@ def voice():
                 f"[{sid}] BOUCLE DÉTECTÉE (voice) : même réponse → transfert forcé"
             )
             sess["transferred"] = True
+            sess["last_transferred_problem"] = sess.get("original_problem") or transcript
             bot_resp = Config.TRANSFER_MESSAGE
             ticket = transfer.create_ticket(
                 session_id=sid, history=sess["history"],
@@ -987,6 +1265,25 @@ def human_response():
     if learning.should_retrain():
         response_eng.reload_index()
         learning.reset_counter()
+
+    # ── Apprentissage éphémère (session uniquement, non persistant) ──────────
+    # Stocké en mémoire → oublié dès la fermeture de session / redémarrage app.
+    problem_text = sess.get("last_transferred_problem") or last_user
+    if problem_text:
+        _session_learn_store(sess, problem_text, response)
+    else:
+        logger.warning(
+            f"[Session Learning] Impossible de mémoriser : problem_text vide "
+            f"(last_transferred_problem='{sess.get('last_transferred_problem')}' "
+            f"last_user='{last_user}')"
+        )
+
+    # Réinitialiser la session pour permettre de continuer la conversation et tester
+    sess["solution_given"]   = False
+    sess["transferred"]      = False
+    sess["stage"]            = "initial"
+    sess["pending_intent"]   = ""
+    sess["original_problem"] = ""   # nettoyé : le prochain message est un nouveau problème
 
     return jsonify({"success": True, "learned": True})
 
