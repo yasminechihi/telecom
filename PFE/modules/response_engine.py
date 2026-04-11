@@ -56,10 +56,22 @@ class ResponseEngine:
     # ─────────────────────────────────────────────────────────
     def _load_embedding_model(self):
         try:
+            import os
             from sentence_transformers import SentenceTransformer
             logger.info(f"Chargement modèle embedding: {self.config.EMBEDDING_MODEL}")
-            self.model = SentenceTransformer(self.config.EMBEDDING_MODEL)
-            logger.info("Modèle embedding chargé.")
+            # Essayer d'abord en mode offline (cache local) pour éviter
+            # les erreurs de connexion à HuggingFace Hub
+            try:
+                os.environ["TRANSFORMERS_OFFLINE"] = "1"
+                os.environ["HF_HUB_OFFLINE"] = "1"
+                self.model = SentenceTransformer(self.config.EMBEDDING_MODEL)
+                logger.info("Modèle embedding chargé depuis le cache local.")
+            except Exception:
+                # Fallback : tenter en mode connecté (premier lancement)
+                os.environ.pop("TRANSFORMERS_OFFLINE", None)
+                os.environ.pop("HF_HUB_OFFLINE", None)
+                self.model = SentenceTransformer(self.config.EMBEDDING_MODEL)
+                logger.info("Modèle embedding chargé depuis HuggingFace Hub.")
         except ImportError:
             raise RuntimeError("sentence-transformers non installé")
         except Exception as e:

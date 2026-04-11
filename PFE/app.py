@@ -246,6 +246,8 @@ def chat():
                 w = sess["collected_entities"].get("wilaya", "")
                 bot_resp += "  " + Config.DELEGATION_QUESTION.format(wilaya=w)
 
+            # "عندك رقم المطلب؟" = demande si l'user A le numéro → clarifying
+            # "اعطيني رقم المطلب" = demande à l'user de FOURNIR le numéro → waiting
             sess["stage"] = "clarifying"
 
             # CRUCIAL : on stocke l'intent du RECORD trouvé (fiable à 100%)
@@ -284,6 +286,33 @@ def chat():
     # ── ÉTAPE 2 : Réponse finale (après clarification) ───────
     # active_intent = intent du RECORD (fiable) ou NLU si pas de record
     active_intent = sess.get("pending_intent") or intent
+
+    # ── Détection numéro de demande : user fournit le numéro après que le bot l'a demandé ──
+    # قرار الذكاء الاصطناعي → تحويل لوكيل بشري immédiat
+    if stage == "waiting_for_request_number":
+        sess["transferred"] = True
+        bot_resp = Config.TRANSFER_MESSAGE
+        ticket = transfer.create_ticket(
+            session_id=sid, history=sess["history"],
+            user_last_text=user_text, nlu_result=nlu_result,
+            rag_confidence=0.0,
+        )
+        sess["history"].append(("bot", bot_resp))
+        sess["stage"]          = "initial"
+        sess["pending_intent"] = ""
+        sess["solution_given"] = True
+        logger.info(f"[{sid}] Numéro de demande reçu → transfert humain forcé")
+        _transfer_rag = {"confidence": 0.0, "escalate": True,
+                         "issue_type": sess.get("pending_intent", ""),
+                         "service_type": "", "action": "تحويل لوكيل بشري"}
+        return jsonify({
+            "bot_response": bot_resp,
+            "transferred":  True,
+            "ticket_id":    ticket.get("ticket_id"),
+            "analysis":     _build_analysis(nlu_result, _transfer_rag,
+                                            collected_entities=sess.get("collected_entities"),
+                                            transferred=True),
+        })
 
     # ── Détection de négation : user répond "non" à la question de clarification ──
     # Ex : Bot demande "عندك رقم المعاملة؟" → User répond "لا معنديش"
@@ -420,11 +449,18 @@ def chat():
         })
 
     sess["history"].append(("bot", bot_resp))
-    # Remettre en mode initial pour le prochain problème dans la même session
-    # et marquer qu'une solution a été fournie (attend un éventuel remerciement)
-    sess["stage"]          = "initial"
-    sess["pending_intent"] = ""
-    sess["solution_given"] = True
+
+    # Si le bot demande à l'user de FOURNIR le numéro de demande
+    # → prochain tour = l'user donne le numéro → transfert immédiat
+    if "اعطيني رقم المطلب" in bot_resp:
+        sess["stage"] = "waiting_for_request_number"
+        logger.info(f"[{sid}] Bot a demandé le numéro → stage=waiting_for_request_number")
+    else:
+        # Remettre en mode initial pour le prochain problème dans la même session
+        # et marquer qu'une solution a été fournie (attend un éventuel remerciement)
+        sess["stage"]          = "initial"
+        sess["pending_intent"] = ""
+        sess["solution_given"] = True
 
     logger.info(
         f"[{sid}] ÉTAPE 2 → intent='{active_intent}' "
@@ -692,6 +728,33 @@ def voice():
         # Étape 2 : réponse
         active_intent = sess.get("pending_intent") or intent
 
+        # ── Détection numéro de demande vocal → transfert humain forcé ──
+        if stage == "waiting_for_request_number":
+            sess["transferred"] = True
+            bot_resp = Config.TRANSFER_MESSAGE
+            ticket = transfer.create_ticket(
+                session_id=sid, history=sess["history"],
+                user_last_text=transcript, nlu_result=nlu_result,
+                rag_confidence=0.0,
+            )
+            sess["history"].append(("bot", bot_resp))
+            sess["stage"]          = "initial"
+            sess["pending_intent"] = ""
+            sess["solution_given"] = True
+            logger.info(f"[{sid}] (vocal) Numéro de demande reçu → transfert humain forcé")
+            _transfer_rag_v = {"confidence": 0.0, "escalate": True,
+                               "issue_type": sess.get("pending_intent", ""),
+                               "service_type": "", "action": "تحويل لوكيل بشري"}
+            return jsonify({
+                "transcript":   transcript,
+                "bot_response": bot_resp,
+                "transferred":  True,
+                "ticket_id":    ticket.get("ticket_id"),
+                "analysis":     _build_analysis(nlu_result, _transfer_rag_v,
+                                                collected_entities=sess.get("collected_entities"),
+                                                transferred=True),
+            })
+
         # Détection de négation vocale : user répond "لا معنديش" à la clarification
         if stage == "clarifying" and _is_negation(transcript):
             bot_resp = Config.NEGATION_CLARIFICATION_RESPONSE
@@ -799,9 +862,15 @@ def voice():
             })
 
         sess["history"].append(("bot", bot_resp))
-        sess["stage"]          = "initial"
-        sess["pending_intent"] = ""
-        sess["solution_given"] = True   # ← active la détection de remerciement au prochain tour
+
+        # Si le bot demande à l'user de FOURNIR le numéro → prochain tour = transfert
+        if "اعطيني رقم المطلب" in bot_resp:
+            sess["stage"] = "waiting_for_request_number"
+            logger.info(f"[{sid}] (voice) Bot a demandé le numéro → stage=waiting_for_request_number")
+        else:
+            sess["stage"]          = "initial"
+            sess["pending_intent"] = ""
+            sess["solution_given"] = True   # ← active la détection de remerciement au prochain tour
 
         return jsonify({
             "transcript":   transcript,
