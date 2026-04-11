@@ -65,6 +65,11 @@ RAG_STRICT_THRESHOLD = 0.45
 # → transfert immédiat, pas de boucle.
 RAG_STRICT_THRESHOLD_AFTER_CLARI = 0.60
 
+# Seuil RAG strict quand le NLU est peu confiant (< NLU_MIN_CONFIDENCE_FOR_CLARI).
+# Si NLU < 0.35 ET RAG < 0.70 → problème probablement hors dataset → transfert immédiat.
+# Évite les réponses fausses quand le NLU classifie à tort (ex: plainte générale → facturation).
+RAG_STRICT_THRESHOLD_LOW_NLU = 0.70
+
 # ── Audio ─────────────────────────────────────────────────────
 AUDIO_SAMPLE_RATE   = 16000            # Hz
 AUDIO_CHANNELS      = 1

@@ -272,7 +272,38 @@ def chat():
                                                  collected_entities=sess.get("collected_entities")),
             })
 
-        # Question non trouvée OU double seuil non atteint (sujet hors dataset)
+        # ── Problème non reconnu → transfert immédiat ───────────
+        # Si le NLU ne reconnaît pas l'intent ET que la similarité sémantique
+        # est trop faible → le problème est hors dataset → transfert humain direct.
+        intent_unknown = intent in ("غير محدد", "unknown", "")
+        rag_gate_failed = not clari["question"]   # gate RAW < 0.50 dans find_clarification_question
+
+        if intent_unknown and rag_gate_failed:
+            logger.info(
+                f"[{sid}] Problème NON RECONNU "
+                f"(intent='{intent}' | clari_conf={clari['confidence']:.3f}) "
+                f"→ transfert humain immédiat"
+            )
+            sess["transferred"] = True
+            bot_resp = Config.TRANSFER_MESSAGE
+            ticket = transfer.create_ticket(
+                session_id=sid, history=sess["history"],
+                user_last_text=user_text, nlu_result=nlu_result,
+                rag_confidence=clari["confidence"],
+            )
+            sess["history"].append(("bot", bot_resp))
+            sess["stage"]          = "initial"
+            sess["pending_intent"] = ""
+            sess["solution_given"] = True
+            return jsonify({
+                "bot_response": bot_resp,
+                "transferred":  True,
+                "ticket_id":    ticket.get("ticket_id"),
+                "analysis":     _build_analysis(nlu_result, {},
+                                                unknown_problem=True),
+            })
+
+        # Problème potentiellement connu mais seuil NLU/clari non atteint
         # → passer directement à l'étape 2 (réponse directe ou transfert humain)
         logger.info(
             f"[{sid}] ÉTAPE 1 ignorée "
@@ -361,12 +392,20 @@ def chat():
     #       dans le dataset → transfert humain immédiat (évite la boucle infinie)
     current_stage = sess.get("stage")
     if current_stage == "responding":
-        strict_threshold = getattr(Config, "RAG_STRICT_THRESHOLD", 0.45)
+        # Si le NLU était peu confiant (< seuil clarification) → problème potentiellement
+        # hors dataset → exiger une confiance RAG plus élevée avant de répondre.
+        # Ex : NLU=23%, RAG=51% → réponse fausse → transférer.
+        NLU_MIN_CONF_CLARI = Config.NLU_MIN_CONFIDENCE_FOR_CLARI   # 0.35
+        if ml_conf < NLU_MIN_CONF_CLARI:
+            strict_threshold = getattr(Config, "RAG_STRICT_THRESHOLD_LOW_NLU", 0.70)
+        else:
+            strict_threshold = getattr(Config, "RAG_STRICT_THRESHOLD", 0.45)
         if rag_conf < strict_threshold:
             rag_escalate = True
             logger.info(
                 f"[{sid}] Seuil strict (hors-dataset) : "
-                f"rag_conf={rag_conf:.3f} < {strict_threshold} → escalade forcée"
+                f"rag_conf={rag_conf:.3f} < {strict_threshold} "
+                f"(ml_conf={ml_conf:.2f}) → escalade forcée"
             )
     elif current_stage == "clarifying":
         strict_threshold = getattr(Config, "RAG_STRICT_THRESHOLD_AFTER_CLARI", 0.60)
@@ -398,13 +437,17 @@ def chat():
             f"[{sid}] Transfert humain → intent='{active_intent}' "
             f"rag_conf={rag_conf:.3f} escalate={rag_escalate}"
         )
+        # Si NLU était peu confiant → problème non reconnu → champs NLU vides
+        _low_nlu = (current_stage == "responding"
+                    and ml_conf < Config.NLU_MIN_CONFIDENCE_FOR_CLARI)
         return jsonify({
             "bot_response": bot_resp,
             "transferred":  True,
             "ticket_id":    ticket.get("ticket_id"),
             "analysis":     _build_analysis(nlu_result, rag_result,
                                             collected_entities=sess.get("collected_entities"),
-                                            transferred=True),
+                                            transferred=True,
+                                            unknown_problem=_low_nlu),
         })
 
     # ── Choisir la réponse ────────────────────────────────────
@@ -691,14 +734,46 @@ def voice():
         NLU_MIN_CONF_CLARI = Config.NLU_MIN_CONFIDENCE_FOR_CLARI         # 0.35
         voice_ml_conf      = nlu_result.get("confidence", 0)
 
-        if stage == "initial" and intent not in ("غير محدد", "unknown", ""):
+        if stage == "initial":
             clari = response_eng.find_clarification_question(
                 transcript, nlu_intent=intent, nlu_service=service_type
             )
+
+            # ── Problème non reconnu (vocal) → transfert immédiat ──
+            voice_intent_unknown = intent in ("غير محدد", "unknown", "")
+            voice_rag_gate_failed = not clari["question"]
+
+            if voice_intent_unknown and voice_rag_gate_failed:
+                logger.info(
+                    f"[{sid}] (vocal) Problème NON RECONNU "
+                    f"(intent='{intent}' | clari_conf={clari['confidence']:.3f}) "
+                    f"→ transfert humain immédiat"
+                )
+                sess["transferred"] = True
+                bot_resp_v = Config.TRANSFER_MESSAGE
+                ticket = transfer.create_ticket(
+                    session_id=sid, history=sess["history"],
+                    user_last_text=transcript, nlu_result=nlu_result,
+                    rag_confidence=clari["confidence"],
+                )
+                sess["history"].append(("bot", bot_resp_v))
+                sess["stage"]          = "initial"
+                sess["pending_intent"] = ""
+                sess["solution_given"] = True
+                return jsonify({
+                    "transcript":   transcript,
+                    "bot_response": bot_resp_v,
+                    "transferred":  True,
+                    "ticket_id":    ticket.get("ticket_id"),
+                    "analysis":     _build_analysis(nlu_result, {},
+                                                    unknown_problem=True),
+                })
+
             clari_ok = (
                 clari["question"]
                 and clari["confidence"] >= CLARI_MIN_CONF
                 and voice_ml_conf >= NLU_MIN_CONF_CLARI
+                and not voice_intent_unknown
             )
             if clari_ok:
                 bot_resp = response_eng._strip_emojis(clari["question"])
@@ -785,12 +860,18 @@ def voice():
         #     Évite la boucle infinie (même question redemandée au tour suivant)
         current_stage_v = sess.get("stage")
         if current_stage_v == "responding":
-            strict_threshold = getattr(Config, "RAG_STRICT_THRESHOLD", 0.45)
+            NLU_MIN_CONF_CLARI_V = Config.NLU_MIN_CONFIDENCE_FOR_CLARI   # 0.35
+            voice_ml_conf_cur    = nlu_result.get("confidence", 0)
+            if voice_ml_conf_cur < NLU_MIN_CONF_CLARI_V:
+                strict_threshold = getattr(Config, "RAG_STRICT_THRESHOLD_LOW_NLU", 0.70)
+            else:
+                strict_threshold = getattr(Config, "RAG_STRICT_THRESHOLD", 0.45)
             if rag_conf < strict_threshold:
                 rag_escalate = True
                 logger.info(
                     f"[{sid}] Seuil strict voice (hors-dataset) : "
-                    f"rag_conf={rag_conf:.3f} < {strict_threshold} → escalade forcée"
+                    f"rag_conf={rag_conf:.3f} < {strict_threshold} "
+                    f"(ml_conf={voice_ml_conf_cur:.2f}) → escalade forcée"
                 )
         elif current_stage_v == "clarifying":
             strict_threshold = getattr(Config, "RAG_STRICT_THRESHOLD_AFTER_CLARI", 0.60)
@@ -969,7 +1050,7 @@ def pending_tickets():
 # ════════════════════════════════════════════════════════════
 
 def _build_analysis(nlu_result, rag_result, clarifying=False, collected_entities=None,
-                    transferred=False):
+                    transferred=False, unknown_problem=False):
     """
     Construit le dict d'analyse pour le frontend.
 
@@ -977,9 +1058,27 @@ def _build_analysis(nlu_result, rag_result, clarifying=False, collected_entities
     (wilaya, delegation, service détectés dans les tours précédents).
     Utilisées en fallback quand le message courant ne contient pas de localisation.
 
-    transferred : True  → forcer قرار = تحويل لوكيل بشري (boucle détectée,
-                          seuil strict, etc.) même si rag_result["escalate"]=False.
+    transferred     : True → forcer قرار = تحويل لوكيل بشري.
+    unknown_problem : True → problème non reconnu → tous les champs NLU = vides/nuls.
     """
+    # Problème non reconnu : tous les champs NLU sont invalides → les vider
+    if unknown_problem:
+        return {
+            "intent":         "",
+            "confidence_nlu": 0,
+            "confidence_rag": 0,
+            "sentiment":      "",
+            "service_type":   "",
+            "wilaya":         "",
+            "delegation":     "",
+            "action":         "",
+            "decision":       "escalade_agent_humain",
+            "ml_used":        False,
+            "ml_backend":     ml_predictor.backend_name,
+            "escalate":       True,
+            "clarifying":     False,
+        }
+
     curr     = nlu_result.get("entities", {})
     acc      = collected_entities or {}
 
