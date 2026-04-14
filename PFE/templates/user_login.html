@@ -1,0 +1,574 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Mon Espace TT — Connexion</title>
+  <link href="https://fonts.googleapis.com/css2?family=Cairo:wght@300;400;600;700;900&display=swap" rel="stylesheet"/>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css"/>
+<style>
+/* ══════════════════════════════════════════════════
+   VARIABLES
+══════════════════════════════════════════════════ */
+:root {
+  --tt-purple:      #5B1FBE;
+  --tt-purple-dark: #3D1484;
+  --tt-purple-light:#7B3FDE;
+  --tt-teal:        #00B4D8;
+  --tt-teal-dark:   #0096B8;
+  --tt-red:         #E8002D;
+  --tt-white:       #FFFFFF;
+  --tt-gray:        #F4F5F7;
+  --tt-border:      #E0E4EF;
+  --tt-text:        #1A1A2E;
+  --tt-muted:       #6B7280;
+  --shadow-sm:      0 2px 8px rgba(91,31,190,0.12);
+  --shadow-md:      0 8px 32px rgba(91,31,190,0.18);
+  --shadow-lg:      0 16px 48px rgba(91,31,190,0.25);
+  --radius:         16px;
+  --radius-sm:      10px;
+}
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+html { scroll-behavior: smooth; }
+body {
+  font-family: 'Cairo', sans-serif;
+  background: var(--tt-gray);
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ══════════════════════════════════════════════════
+   HEADER
+══════════════════════════════════════════════════ */
+.tt-header {
+  background: var(--tt-white);
+  border-bottom: 3px solid var(--tt-purple);
+  padding: 0 2rem;
+  height: 70px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.08);
+  position: sticky;
+  top: 0;
+  z-index: 100;
+}
+.header-brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  text-decoration: none;
+}
+.header-logo img {
+  height: 48px;
+  width: auto;
+}
+.header-title {
+  line-height: 1.2;
+}
+.header-title h1 {
+  font-size: 1.1rem;
+  font-weight: 700;
+  color: var(--tt-purple);
+  margin: 0;
+}
+.header-title p {
+  font-size: 0.72rem;
+  color: var(--tt-muted);
+  margin: 0;
+}
+.header-badge {
+  background: var(--tt-teal);
+  color: white;
+  padding: 6px 18px;
+  border-radius: 25px;
+  font-size: 0.82rem;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* ══════════════════════════════════════════════════
+   MAIN — SPLIT LAYOUT
+══════════════════════════════════════════════════ */
+.auth-main {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2rem 1rem;
+  background:
+    radial-gradient(ellipse at 20% 50%, rgba(91,31,190,0.06) 0%, transparent 60%),
+    radial-gradient(ellipse at 80% 20%, rgba(0,180,216,0.05) 0%, transparent 60%),
+    var(--tt-gray);
+}
+
+.auth-card {
+  display: grid;
+  grid-template-columns: 380px 1fr;
+  max-width: 900px;
+  width: 100%;
+  border-radius: var(--radius);
+  overflow: hidden;
+  box-shadow: var(--shadow-lg);
+  background: white;
+}
+
+/* ── Panneau gauche (branding) ─────────────────── */
+.auth-brand {
+  background: linear-gradient(145deg, var(--tt-purple-dark) 0%, var(--tt-purple) 50%, var(--tt-purple-light) 100%);
+  padding: 3rem 2.5rem;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2rem;
+  position: relative;
+  overflow: hidden;
+}
+.auth-brand::before {
+  content: '';
+  position: absolute;
+  top: -80px; right: -80px;
+  width: 250px; height: 250px;
+  border-radius: 50%;
+  background: rgba(255,255,255,0.06);
+}
+.auth-brand::after {
+  content: '';
+  position: absolute;
+  bottom: -60px; left: -60px;
+  width: 200px; height: 200px;
+  border-radius: 50%;
+  background: rgba(255,255,255,0.05);
+}
+.brand-logo-box {
+  background: white;
+  border-radius: 20px;
+  padding: 18px;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.2);
+  z-index: 1;
+}
+.brand-logo-box img {
+  width: 90px;
+  height: auto;
+  display: block;
+}
+.brand-text {
+  text-align: center;
+  z-index: 1;
+}
+.brand-text h2 {
+  font-size: 1.7rem;
+  font-weight: 900;
+  color: white;
+  margin-bottom: 8px;
+  line-height: 1.2;
+}
+.brand-text p {
+  font-size: 0.9rem;
+  color: rgba(255,255,255,0.80);
+  line-height: 1.6;
+}
+.brand-features {
+  list-style: none;
+  z-index: 1;
+  width: 100%;
+}
+.brand-features li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: rgba(255,255,255,0.85);
+  font-size: 0.85rem;
+  padding: 8px 0;
+  border-bottom: 1px solid rgba(255,255,255,0.1);
+}
+.brand-features li:last-child { border-bottom: none; }
+.brand-features li i {
+  color: var(--tt-teal);
+  font-size: 1rem;
+  width: 20px;
+  text-align: center;
+}
+
+/* ── Panneau droit (formulaire) ────────────────── */
+.auth-form-side {
+  padding: 3rem 2.5rem;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+
+/* Onglets Login / Register */
+.auth-tabs {
+  display: flex;
+  gap: 0;
+  background: var(--tt-gray);
+  border-radius: var(--radius-sm);
+  padding: 4px;
+  margin-bottom: 2rem;
+}
+.auth-tab {
+  flex: 1;
+  padding: 10px 0;
+  text-align: center;
+  font-size: 0.92rem;
+  font-weight: 600;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all .25s;
+  border: none;
+  background: transparent;
+  color: var(--tt-muted);
+  text-decoration: none;
+}
+.auth-tab.active {
+  background: var(--tt-purple);
+  color: white;
+  box-shadow: var(--shadow-sm);
+}
+.auth-tab:hover:not(.active) {
+  background: rgba(91,31,190,0.08);
+  color: var(--tt-purple);
+}
+
+.form-title {
+  font-size: 1.5rem;
+  font-weight: 800;
+  color: var(--tt-text);
+  margin-bottom: 0.3rem;
+}
+.form-subtitle {
+  font-size: 0.85rem;
+  color: var(--tt-muted);
+  margin-bottom: 1.5rem;
+}
+
+/* Champs form */
+.form-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.8rem;
+}
+.form-group {
+  margin-bottom: 1rem;
+}
+.form-label {
+  display: block;
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--tt-text);
+  margin-bottom: 6px;
+}
+.form-input-wrap {
+  position: relative;
+}
+.form-input-wrap i {
+  position: absolute;
+  left: 14px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--tt-muted);
+  font-size: 0.9rem;
+  transition: color .2s;
+  pointer-events: none;
+}
+.form-input {
+  width: 100%;
+  padding: 11px 14px 11px 42px;
+  border: 1.5px solid var(--tt-border);
+  border-radius: var(--radius-sm);
+  font-family: 'Cairo', sans-serif;
+  font-size: 0.9rem;
+  color: var(--tt-text);
+  background: var(--tt-white);
+  transition: border-color .2s, box-shadow .2s;
+  outline: none;
+}
+.form-input:focus {
+  border-color: var(--tt-purple);
+  box-shadow: 0 0 0 3px rgba(91,31,190,0.10);
+}
+.form-input:focus + i,
+.form-input-wrap:focus-within i {
+  color: var(--tt-purple);
+}
+
+/* Bouton submit */
+.btn-submit {
+  width: 100%;
+  padding: 13px;
+  background: linear-gradient(135deg, var(--tt-purple) 0%, var(--tt-purple-light) 100%);
+  color: white;
+  border: none;
+  border-radius: var(--radius-sm);
+  font-family: 'Cairo', sans-serif;
+  font-size: 1rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: transform .2s, box-shadow .2s;
+  box-shadow: 0 4px 16px rgba(91,31,190,0.35);
+  margin-top: 0.5rem;
+}
+.btn-submit:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 24px rgba(91,31,190,0.45);
+}
+.btn-submit:active { transform: translateY(0); }
+
+/* Message d'erreur */
+.alert-error {
+  background: #FEF2F2;
+  border: 1px solid #FECACA;
+  border-radius: var(--radius-sm);
+  padding: 10px 14px;
+  color: #DC2626;
+  font-size: 0.85rem;
+  margin-bottom: 1rem;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* Séparateur */
+.divider {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 1.2rem 0;
+  color: var(--tt-muted);
+  font-size: 0.78rem;
+}
+.divider::before, .divider::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--tt-border);
+}
+
+.switch-link {
+  text-align: center;
+  font-size: 0.85rem;
+  color: var(--tt-muted);
+}
+.switch-link a {
+  color: var(--tt-purple);
+  font-weight: 600;
+  text-decoration: none;
+}
+.switch-link a:hover { text-decoration: underline; }
+
+/* ══════════════════════════════════════════════════
+   FOOTER
+══════════════════════════════════════════════════ */
+.tt-footer {
+  background: linear-gradient(135deg, var(--tt-purple-dark) 0%, #2D1270 100%);
+  color: rgba(255,255,255,0.7);
+  text-align: center;
+  padding: 1.2rem;
+  font-size: 0.78rem;
+}
+.tt-footer a { color: var(--tt-teal); text-decoration: none; }
+
+/* ══════════════════════════════════════════════════
+   RESPONSIVE
+══════════════════════════════════════════════════ */
+@media (max-width: 768px) {
+  .auth-card {
+    grid-template-columns: 1fr;
+    max-width: 440px;
+  }
+  .auth-brand {
+    padding: 2rem 1.5rem;
+    gap: 1rem;
+  }
+  .brand-features { display: none; }
+  .form-row { grid-template-columns: 1fr; }
+  .auth-form-side { padding: 2rem 1.5rem; }
+}
+</style>
+</head>
+<body>
+
+<!-- ─── HEADER ──────────────────────────────────────── -->
+<header class="tt-header">
+  <a class="header-brand" href="/">
+    <div class="header-logo">
+      <img src="/static/logo_tt.png" alt="Tunisie Telecom"/>
+    </div>
+    <div class="header-title">
+      <h1>Tunisie Telecom</h1>
+      <p>Mon Espace Client</p>
+    </div>
+  </a>
+  <div class="header-badge">
+    <i class="fas fa-shield-alt"></i>
+    Espace sécurisé
+  </div>
+</header>
+
+<!-- ─── MAIN ─────────────────────────────────────────── -->
+<main class="auth-main">
+  <div class="auth-card">
+
+    <!-- Panneau branding -->
+    <div class="auth-brand">
+      <div class="brand-logo-box">
+        <img src="/static/logo_tt.png" alt="TT Logo"/>
+      </div>
+      <div class="brand-text">
+        <h2>Bienvenue sur<br/>Mon Espace TT</h2>
+        <p>Gérez vos réclamations et<br/>chattez avec notre assistant virtuel</p>
+      </div>
+      <ul class="brand-features">
+        <li><i class="fas fa-robot"></i> Assistant virtuel intelligent</li>
+        <li><i class="fas fa-history"></i> Historique de vos réclamations</li>
+        <li><i class="fas fa-clock"></i> Disponible 24h/24, 7j/7</li>
+        <li><i class="fas fa-headset"></i> Transfert vers agent humain</li>
+      </ul>
+    </div>
+
+    <!-- Panneau formulaire -->
+    <div class="auth-form-side">
+      <!-- Onglets -->
+      <div class="auth-tabs">
+        <a class="auth-tab {% if mode == 'login' %}active{% endif %}"
+           href="{{ url_for('login') }}">
+          <i class="fas fa-sign-in-alt"></i> Se connecter
+        </a>
+        <a class="auth-tab {% if mode == 'register' %}active{% endif %}"
+           href="{{ url_for('register') }}">
+          <i class="fas fa-user-plus"></i> Créer un compte
+        </a>
+      </div>
+
+      {% if mode == 'login' %}
+      <!-- ── Formulaire CONNEXION ── -->
+      <div class="form-title">Connexion</div>
+      <div class="form-subtitle">Accédez à votre espace personnel</div>
+
+      {% if error %}
+      <div class="alert-error">
+        <i class="fas fa-exclamation-circle"></i> {{ error }}
+      </div>
+      {% endif %}
+
+      <form method="POST" action="{{ url_for('login') }}">
+        <div class="form-group">
+          <label class="form-label">Adresse email</label>
+          <div class="form-input-wrap">
+            <input type="email" name="email" class="form-input"
+                   placeholder="exemple@email.com" required autocomplete="email"/>
+            <i class="fas fa-envelope"></i>
+          </div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Mot de passe</label>
+          <div class="form-input-wrap">
+            <input type="password" name="password" class="form-input"
+                   placeholder="••••••••" required autocomplete="current-password"/>
+            <i class="fas fa-lock"></i>
+          </div>
+        </div>
+        <button type="submit" class="btn-submit">
+          <i class="fas fa-sign-in-alt"></i>&nbsp; Se connecter
+        </button>
+      </form>
+
+      <div class="divider">ou</div>
+      <div class="switch-link">
+        Pas encore de compte ?
+        <a href="{{ url_for('register') }}">Créer un compte gratuitement</a>
+      </div>
+
+      {% else %}
+      <!-- ── Formulaire INSCRIPTION ── -->
+      <div class="form-title">Créer un compte</div>
+      <div class="form-subtitle">Rejoignez Mon Espace TT en quelques secondes</div>
+
+      {% if error %}
+      <div class="alert-error">
+        <i class="fas fa-exclamation-circle"></i> {{ error }}
+      </div>
+      {% endif %}
+
+      <form method="POST" action="{{ url_for('register') }}">
+        <div class="form-row">
+          <div class="form-group">
+            <label class="form-label">Nom</label>
+            <div class="form-input-wrap">
+              <input type="text" name="nom" class="form-input"
+                     placeholder="Ben Ali" required/>
+              <i class="fas fa-user"></i>
+            </div>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Prénom</label>
+            <div class="form-input-wrap">
+              <input type="text" name="prenom" class="form-input"
+                     placeholder="Mohamed" required/>
+              <i class="fas fa-user"></i>
+            </div>
+          </div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Email</label>
+          <div class="form-input-wrap">
+            <input type="email" name="email" class="form-input"
+                   placeholder="exemple@email.com" required/>
+            <i class="fas fa-envelope"></i>
+          </div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Numéro de téléphone</label>
+          <div class="form-input-wrap">
+            <input type="tel" name="telephone" class="form-input"
+                   placeholder="2X XXX XXX" required/>
+            <i class="fas fa-phone"></i>
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label class="form-label">Mot de passe</label>
+            <div class="form-input-wrap">
+              <input type="password" name="password" class="form-input"
+                     placeholder="Min. 6 caractères" required minlength="6"/>
+              <i class="fas fa-lock"></i>
+            </div>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Confirmer</label>
+            <div class="form-input-wrap">
+              <input type="password" name="confirm_password" class="form-input"
+                     placeholder="Répétez" required/>
+              <i class="fas fa-lock"></i>
+            </div>
+          </div>
+        </div>
+        <button type="submit" class="btn-submit">
+          <i class="fas fa-user-plus"></i>&nbsp; Créer mon compte
+        </button>
+      </form>
+
+      <div class="divider">ou</div>
+      <div class="switch-link">
+        Déjà un compte ?
+        <a href="{{ url_for('login') }}">Se connecter</a>
+      </div>
+      {% endif %}
+    </div>
+
+  </div>
+</main>
+
+<!-- ─── FOOTER ────────────────────────────────────────── -->
+<footer class="tt-footer">
+  © 2024 Tunisie Telecom — Tous droits réservés |
+  <a href="https://www.tunisietelecom.tn" target="_blank">tunisietelecom.tn</a>
+</footer>
+
+</body>
+</html>

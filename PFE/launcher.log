@@ -1,0 +1,132 @@
+2026-04-14 11:41:34,116 [INFO] =======================================================
+2026-04-14 11:41:34,117 [INFO]   VoiceBot Tunisie Telecom — Lanceur
+2026-04-14 11:41:34,117 [INFO]   Python  : 3.10.20 | packaged by Anaconda, Inc. | (main, Mar 11 2026, 17:42:35) [MSC v.1942 64 bit (AMD64)]
+2026-04-14 11:41:34,117 [INFO]   Dossier : C:\Users\Yasmine\Desktop\telecom\PFE
+2026-04-14 11:41:34,117 [INFO] =======================================================
+2026-04-14 11:41:34,118 [INFO] [Patch 1] LRScheduler torch...
+2026-04-14 11:41:37,107 [INFO]   ✓ OK.
+2026-04-14 11:41:37,108 [INFO] [Patch 3] Vérification faster-whisper...
+2026-04-14 11:41:40,130 [INFO]   ✓ faster-whisper 1.2.1 présent.
+2026-04-14 11:41:40,130 [INFO]   ✓ STT vocal activé — modèle Whisper medium (1.5 Go)
+2026-04-14 11:41:40,130 [INFO]     sera téléchargé au démarrage si absent (10-30 min).
+2026-04-14 11:41:40,131 [INFO] [Patch 4] Vérification scikit-learn...
+2026-04-14 11:41:42,285 [INFO]   scikit-learn actuel : 1.7.2
+2026-04-14 11:41:42,285 [INFO]   ✓ sklearn compatible — modèles ML actifs.
+2026-04-14 11:41:42,286 [INFO] [Check] Packages critiques...
+2026-04-14 11:41:42,462 [INFO]   ✓ flask
+2026-04-14 11:41:42,462 [INFO]   ✓ joblib
+2026-04-14 11:41:42,684 [INFO]   ✓ gtts
+2026-04-14 11:41:42,692 [INFO]   ✓ colorlog
+2026-04-14 11:41:42,692 [INFO]   ✓ numpy
+2026-04-14 11:41:47,786 [INFO]   ✓ sentence_transformers
+2026-04-14 11:41:47,789 [INFO] Loading faiss with AVX512 support.
+2026-04-14 11:41:47,790 [INFO] Could not load library with AVX512 support due to:
+ModuleNotFoundError("No module named 'faiss.swigfaiss_avx512'")
+2026-04-14 11:41:47,790 [INFO] Loading faiss with AVX2 support.
+2026-04-14 11:41:47,856 [INFO] Successfully loaded faiss with AVX2 support.
+2026-04-14 11:41:47,867 [INFO]   ✓ faiss
+2026-04-14 11:41:47,918 [INFO]   ✓ edge_tts
+2026-04-14 11:41:47,918 [INFO]   ✓ Tous les packages présents.
+2026-04-14 11:41:47,920 [INFO]   ⏳ Attente démarrage Flask (jusqu'à 40 min si téléchargement Whisper)...
+2026-04-14 11:41:47,920 [INFO] 
+2026-04-14 11:41:47,920 [INFO] >>> Lancement Flask sur http://localhost:5000 ...
+2026-04-14 11:41:47,921 [INFO] >>> Ctrl+C pour arrêter
+2026-04-14 11:41:47,921 [INFO] 
+2026-04-14 11:41:48,273 [INFO] Chargement modules...
+2026-04-14 11:41:48,548 [INFO] ✅ Modèles TF-IDF chargés depuis 'C:\Users\Yasmine\Desktop\telecom\PFE\models'
+2026-04-14 11:41:48,551 [INFO] NLU → Mode ML actif (modèles ML.ipynb chargés).
+2026-04-14 11:41:48,551 [INFO] Chargement modèle embedding: sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2
+2026-04-14 11:41:48,556 [INFO] Use pytorch device_name: cpu
+2026-04-14 11:41:48,556 [INFO] Load pretrained SentenceTransformer: sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2
+2026-04-14 11:41:48,943 [INFO] HTTP Request: HEAD https://huggingface.co/sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2/resolve/main/modules.json "HTTP/1.1 307 Temporary Redirect"
+2026-04-14 11:41:48,986 [INFO] HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2/e8f8c211226b894fcb81acc59f3b34ba3efd5f42/modules.json "HTTP/1.1 200 OK"
+2026-04-14 11:41:49,140 [INFO] HTTP Request: HEAD https://huggingface.co/sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2/resolve/main/config_sentence_transformers.json "HTTP/1.1 307 Temporary Redirect"
+2026-04-14 11:41:49,183 [INFO] HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2/e8f8c211226b894fcb81acc59f3b34ba3efd5f42/config_sentence_transformers.json "HTTP/1.1 200 OK"
+2026-04-14 11:41:49,340 [INFO] HTTP Request: HEAD https://huggingface.co/sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2/resolve/main/config_sentence_transformers.json "HTTP/1.1 307 Temporary Redirect"
+2026-04-14 11:41:49,341 [WARNING] Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+2026-04-14 11:41:49,383 [INFO] HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2/e8f8c211226b894fcb81acc59f3b34ba3efd5f42/config_sentence_transformers.json "HTTP/1.1 200 OK"
+2026-04-14 11:41:49,529 [INFO] HTTP Request: HEAD https://huggingface.co/sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2/resolve/main/README.md "HTTP/1.1 307 Temporary Redirect"
+2026-04-14 11:41:49,571 [INFO] HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2/e8f8c211226b894fcb81acc59f3b34ba3efd5f42/README.md "HTTP/1.1 200 OK"
+2026-04-14 11:41:49,736 [INFO] HTTP Request: HEAD https://huggingface.co/sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2/resolve/main/modules.json "HTTP/1.1 307 Temporary Redirect"
+2026-04-14 11:41:49,778 [INFO] HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2/e8f8c211226b894fcb81acc59f3b34ba3efd5f42/modules.json "HTTP/1.1 200 OK"
+2026-04-14 11:41:49,932 [INFO] HTTP Request: HEAD https://huggingface.co/sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2/resolve/main/sentence_bert_config.json "HTTP/1.1 307 Temporary Redirect"
+2026-04-14 11:41:49,975 [INFO] HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2/e8f8c211226b894fcb81acc59f3b34ba3efd5f42/sentence_bert_config.json "HTTP/1.1 200 OK"
+2026-04-14 11:41:50,136 [INFO] HTTP Request: HEAD https://huggingface.co/sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2/resolve/main/adapter_config.json "HTTP/1.1 404 Not Found"
+2026-04-14 11:41:50,370 [INFO] HTTP Request: HEAD https://huggingface.co/sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2/resolve/main/config.json "HTTP/1.1 307 Temporary Redirect"
+2026-04-14 11:41:50,413 [INFO] HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2/e8f8c211226b894fcb81acc59f3b34ba3efd5f42/config.json "HTTP/1.1 200 OK"
+2026-04-14 11:41:50,852 [INFO] HTTP Request: HEAD https://huggingface.co/sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2/resolve/main/config.json "HTTP/1.1 307 Temporary Redirect"
+2026-04-14 11:41:50,894 [INFO] HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2/e8f8c211226b894fcb81acc59f3b34ba3efd5f42/config.json "HTTP/1.1 200 OK"
+2026-04-14 11:41:51,042 [INFO] HTTP Request: HEAD https://huggingface.co/sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2/resolve/main/tokenizer_config.json "HTTP/1.1 307 Temporary Redirect"
+2026-04-14 11:41:51,085 [INFO] HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2/e8f8c211226b894fcb81acc59f3b34ba3efd5f42/tokenizer_config.json "HTTP/1.1 200 OK"
+2026-04-14 11:41:51,243 [INFO] HTTP Request: HEAD https://huggingface.co/sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2/resolve/main/tokenizer_config.json "HTTP/1.1 307 Temporary Redirect"
+2026-04-14 11:41:51,287 [INFO] HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2/e8f8c211226b894fcb81acc59f3b34ba3efd5f42/tokenizer_config.json "HTTP/1.1 200 OK"
+2026-04-14 11:41:51,436 [INFO] HTTP Request: GET https://huggingface.co/api/models/sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2/tree/main/additional_chat_templates?recursive=false&expand=false "HTTP/1.1 404 Not Found"
+2026-04-14 11:41:51,701 [INFO] HTTP Request: GET https://huggingface.co/api/models/sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2/tree/main?recursive=true&expand=false "HTTP/1.1 200 OK"
+2026-04-14 11:41:54,255 [INFO] HTTP Request: GET https://huggingface.co/api/models/sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2 "HTTP/1.1 200 OK"
+2026-04-14 11:41:54,774 [INFO] HTTP Request: HEAD https://huggingface.co/sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2/resolve/main/1_Pooling/config.json "HTTP/1.1 307 Temporary Redirect"
+2026-04-14 11:41:54,849 [INFO] HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2/e8f8c211226b894fcb81acc59f3b34ba3efd5f42/1_Pooling%2Fconfig.json "HTTP/1.1 200 OK"
+2026-04-14 11:41:55,010 [INFO] HTTP Request: GET https://huggingface.co/api/models/sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2 "HTTP/1.1 200 OK"
+2026-04-14 11:41:55,019 [INFO] Modèle embedding chargé depuis le cache local.
+2026-04-14 11:41:57,835 [INFO]   ... chargement (5s) — téléchargement Whisper en cours...
+2026-04-14 11:42:58,959 [INFO] Index problèmes (étape 1) construit — 6656 vecteurs.
+2026-04-14 11:42:58,960 [INFO] Index FAISS chargé — 6656 vecteurs.
+2026-04-14 11:42:58,986 [INFO] LearningModule initialisé — 8 interactions apprises.
+2026-04-14 11:42:58,987 [INFO] HumanTransfer initialisé.
+2026-04-14 11:42:58,987 [INFO] ML Backend : TF-IDF + LogReg
+2026-04-14 11:42:59,398 [INFO] HTTP Request: GET https://huggingface.co/api/models/Systran/faster-whisper-medium/revision/main "HTTP/1.1 200 OK"
+2026-04-14 11:43:05,601 [INFO] Whisper chargé.
+2026-04-14 11:43:05,601 [INFO] ✅ Modules prêts.
+2026-04-14 11:43:05,630 [INFO] [31m[1mWARNING: This is a development server. Do not use it in a production deployment. Use a production WSGI server instead.[0m
+ * Running on all addresses (0.0.0.0)
+ * Running on http://127.0.0.1:5000
+ * Running on http://192.168.1.13:5000
+2026-04-14 11:43:05,630 [INFO] [33mPress CTRL+C to quit[0m
+2026-04-14 11:43:08,145 [INFO] 127.0.0.1 - - [14/Apr/2026 11:43:08] "GET / HTTP/1.1" 200 -
+2026-04-14 11:43:08,239 [INFO]   ✓ Flask prêt — navigateur ouvert sur http://localhost:5000
+2026-04-14 11:43:08,664 [INFO] 127.0.0.1 - - [14/Apr/2026 11:43:08] "GET / HTTP/1.1" 200 -
+2026-04-14 11:43:08,776 [INFO] 127.0.0.1 - - [14/Apr/2026 11:43:08] "GET /api/stats HTTP/1.1" 200 -
+2026-04-14 11:43:08,901 [INFO] 127.0.0.1 - - [14/Apr/2026 11:43:08] "[33mGET /favicon.ico HTTP/1.1[0m" 404 -
+2026-04-14 11:43:14,631 [INFO] 127.0.0.1 - - [14/Apr/2026 11:43:14] "POST /api/new_session HTTP/1.1" 200 -
+2026-04-14 11:43:18,648 [INFO] [TT_8263ACA3F8] Salutation reçue → greeting envoyé
+2026-04-14 11:43:18,649 [INFO] 127.0.0.1 - - [14/Apr/2026 11:43:18] "POST /api/chat HTTP/1.1" 200 -
+2026-04-14 11:43:18,964 [INFO] Coqui TTS non installé (pip install TTS) → fallback edge-tts/gTTS
+2026-04-14 11:43:21,775 [INFO] TTS via edge-tts (ar-TN-ReemNeural)
+2026-04-14 11:43:21,776 [INFO] 127.0.0.1 - - [14/Apr/2026 11:43:21] "POST /api/tts HTTP/1.1" 200 -
+2026-04-14 11:43:39,041 [INFO] 127.0.0.1 - - [14/Apr/2026 11:43:39] "GET /api/stats HTTP/1.1" 200 -
+2026-04-14 11:43:50,351 [INFO] 127.0.0.1 - - [14/Apr/2026 11:43:50] "[33mGET /favicon.ico HTTP/1.1[0m" 404 -
+2026-04-14 11:43:57,565 [INFO] Clari INTENT+SVC 'عطل في الشبكه/5G/Réseau' score=0.842 → 'الخدمة موبيل ولا فيكس؟'
+2026-04-14 11:43:57,578 [INFO] [TT_8263ACA3F8] ÉTAPE 1 → NLU='عطل في الشبكه' RECORD='عطل في الشبكة' question='الخدمة موبيل ولا فيكس؟' conf=0.842
+2026-04-14 11:43:57,580 [INFO] 127.0.0.1 - - [14/Apr/2026 11:43:57] "POST /api/chat HTTP/1.1" 200 -
+2026-04-14 11:43:57,897 [INFO] Coqui TTS non installé (pip install TTS) → fallback edge-tts/gTTS
+2026-04-14 11:43:59,554 [INFO] TTS via edge-tts (ar-TN-ReemNeural)
+2026-04-14 11:43:59,557 [INFO] 127.0.0.1 - - [14/Apr/2026 11:43:59] "POST /api/tts HTTP/1.1" 200 -
+2026-04-14 11:44:08,778 [INFO] 127.0.0.1 - - [14/Apr/2026 11:44:08] "GET /api/stats HTTP/1.1" 200 -
+2026-04-14 11:44:09,674 [INFO] 127.0.0.1 - - [14/Apr/2026 11:44:09] "POST /api/new_session HTTP/1.1" 200 -
+2026-04-14 11:44:14,478 [INFO] [TT_B0EC14AC59] Salutation reçue → greeting envoyé
+2026-04-14 11:44:14,479 [INFO] 127.0.0.1 - - [14/Apr/2026 11:44:14] "POST /api/chat HTTP/1.1" 200 -
+2026-04-14 11:44:14,805 [INFO] Coqui TTS non installé (pip install TTS) → fallback edge-tts/gTTS
+2026-04-14 11:44:16,324 [INFO] TTS via edge-tts (ar-TN-ReemNeural)
+2026-04-14 11:44:16,326 [INFO] 127.0.0.1 - - [14/Apr/2026 11:44:16] "POST /api/tts HTTP/1.1" 200 -
+2026-04-14 11:44:38,786 [INFO] 127.0.0.1 - - [14/Apr/2026 11:44:38] "GET /api/stats HTTP/1.1" 200 -
+2026-04-14 11:44:44,151 [INFO] Clari INTENT+SVC 'تاخير في التركيب/ADSL' score=0.775 → 'عندك رقم المطلب (numéro de demande)؟'
+2026-04-14 11:44:44,152 [INFO] [TT_B0EC14AC59] ÉTAPE 1 → NLU='تاخير في التركيب' RECORD='تأخير في التر كيب' question='عندك رقم المطلب (numéro de demande)؟' conf=0.775
+2026-04-14 11:44:44,154 [INFO] 127.0.0.1 - - [14/Apr/2026 11:44:44] "POST /api/chat HTTP/1.1" 200 -
+2026-04-14 11:44:44,173 [INFO] Coqui TTS non installé (pip install TTS) → fallback edge-tts/gTTS
+2026-04-14 11:44:45,378 [INFO] TTS via edge-tts (ar-TN-ReemNeural)
+2026-04-14 11:44:45,381 [INFO] 127.0.0.1 - - [14/Apr/2026 11:44:45] "POST /api/tts HTTP/1.1" 200 -
+2026-04-14 11:45:02,770 [INFO] [NLU] Cohérence ML : wilaya 'تونس' → 'بن عروس' (délégation ML='رادس' trouvée dans la map)
+2026-04-14 11:45:02,922 [INFO] RAG PASS1 → intent='تأخير في التر كيب' score=1.000 (global=1.000 ignoré)
+2026-04-14 11:45:02,924 [INFO] [TT_B0EC14AC59] Bot a demandé le numéro → stage=waiting_for_request_number
+2026-04-14 11:45:02,925 [INFO] [TT_B0EC14AC59] ÉTAPE 2 → intent='تأخير في التر كيب' rag_conf=1.000 response='مرحبا بيك، نعتذرو عالـ retard. اعطيني رقم المطلب ب'
+2026-04-14 11:45:02,927 [INFO] 127.0.0.1 - - [14/Apr/2026 11:45:02] "POST /api/chat HTTP/1.1" 200 -
+2026-04-14 11:45:03,008 [INFO] Coqui TTS non installé (pip install TTS) → fallback edge-tts/gTTS
+2026-04-14 11:45:03,552 [INFO] TTS via edge-tts (ar-TN-ReemNeural)
+2026-04-14 11:45:03,555 [INFO] 127.0.0.1 - - [14/Apr/2026 11:45:03] "POST /api/tts HTTP/1.1" 200 -
+2026-04-14 11:45:07,223 [INFO] ML conf 0.09 < 0.3 → fusion regex
+2026-04-14 11:45:07,238 [INFO] Ticket créé: TKT_20260414_114507_14AC59 | priorité: normale
+2026-04-14 11:45:07,239 [INFO] [TT_B0EC14AC59] Numéro de demande reçu → transfert humain forcé
+2026-04-14 11:45:07,241 [INFO] 127.0.0.1 - - [14/Apr/2026 11:45:07] "POST /api/chat HTTP/1.1" 200 -
+2026-04-14 11:45:07,573 [INFO] Coqui TTS non installé (pip install TTS) → fallback edge-tts/gTTS
+2026-04-14 11:45:08,551 [INFO] TTS via edge-tts (ar-TN-ReemNeural)
+2026-04-14 11:45:08,554 [INFO] 127.0.0.1 - - [14/Apr/2026 11:45:08] "POST /api/tts HTTP/1.1" 200 -
+2026-04-14 11:45:08,779 [INFO] 127.0.0.1 - - [14/Apr/2026 11:45:08] "GET /api/stats HTTP/1.1" 200 -
