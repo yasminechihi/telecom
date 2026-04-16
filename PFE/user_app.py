@@ -4,10 +4,11 @@
 #  Flask app séparée (port 5001) — Ne touche PAS à app.py
 #
 #  Fonctionnalités :
-#    - Authentification : Sign In / Sign Up (MySQL EasyPHP)
+#    - Authentification : Sign In / Sign Up (Firebase Firestore)
 #    - Chat avec le bot (même logique que app.py, sans détails NLU)
 #    - Dashboard : historique des réclamations par client
 #    - Design Tunisie Telecom (violet, blanc)
+#    - Transfert vers agent humain via Asterisk AMI (WSL)
 # ============================================================
 
 import os, sys, json, uuid, logging, re, types, importlib.util
@@ -79,17 +80,255 @@ logging.basicConfig(level=logging.INFO,
 logger = logging.getLogger("user_app")
 
 # ══════════════════════════════════════════════════════════
-#  INITIALISATION BASE DE DONNÉES (création auto des tables)
+#  INITIALISATION FIREBASE FIRESTORE
 # ══════════════════════════════════════════════════════════
-from db_config import db_execute, init_db
+from firebase_config import (
+    init_firebase,
+    user_create, user_get_by_email, user_get_by_id,
+    user_update_last_login, user_update_profile,
+    conversation_create, conversation_get, conversation_update,
+    conversations_get_by_user,
+    message_add, messages_get_by_conversation,
+    user_stats, reclamations_get_by_user,
+)
 
-logger.info("Initialisation base de données MySQL...")
-_db_ok = init_db()
+logger.info("Connexion Firebase Firestore...")
+_db_ok = init_firebase()
 if not _db_ok:
-    logger.critical("=" * 55)
-    logger.critical("  ERREUR MySQL : vérifiez que EasyPHP est démarré")
-    logger.critical("  et que le serveur MySQL tourne sur localhost:3306")
-    logger.critical("=" * 55)
+    logger.critical("=" * 60)
+    logger.critical("  ERREUR Firebase : vérifiez serviceAccountKey.json")
+    logger.critical("  Voir firebase_config.py pour les instructions setup")
+    logger.critical("=" * 60)
+
+# ── Intégration Asterisk AMI (appels via WSL) ─────────────
+from asterisk_ami import originate_call as _asterisk_call, check_asterisk_available
+import subprocess, threading, time as _time
+
+def _auto_start_asterisk():
+    """
+    Demarre Asterisk dans WSL automatiquement au lancement de user_app.py.
+    Fonctionne avec networkingMode=mirrored (localhost:5038 direct, sans netsh).
+    S'execute en arriere-plan pour ne pas retarder Flask.
+    """
+    def _wsl(cmd_list, timeout=30):
+        """Lance une commande dans WSL et retourne (stdout+stderr, returncode)."""
+        try:
+            r = subprocess.run(
+                ["wsl", "-u", "root", "--"] + cmd_list,
+                capture_output=True, text=True, timeout=timeout
+            )
+            return (r.stdout + r.stderr).strip(), r.returncode
+        except FileNotFoundError:
+            return "WSL introuvable", -1
+        except subprocess.TimeoutExpired:
+            return "timeout", -2
+        except Exception as e:
+            return str(e), -3
+
+    def _run():
+        logger.info("[Asterisk] Demarrage automatique via WSL...")
+
+        # 1. Verifier que WSL est accessible
+        out, rc = _wsl(["echo", "wsl_ok"])
+        if "wsl_ok" not in out:
+            logger.warning(f"[Asterisk] WSL inaccessible : {out}")
+            return
+
+        # 2. Verifier si Asterisk est installe
+        out, rc = _wsl(["which", "asterisk"])
+        if rc != 0 or not out.strip():
+            logger.warning(
+                "[Asterisk] Asterisk non installe dans WSL. "
+                "Lancez d'abord : wsl bash setup_asterisk_wsl.sh"
+            )
+            return
+
+        # 3. Demarrer le service
+        out, rc = _wsl(["service", "asterisk", "start"])
+        logger.info(f"[Asterisk] service start -> {out or 'OK'} (rc={rc})")
+
+        # 4. Attendre que le processus soit pret
+        _time.sleep(4)
+
+        # 5. Verifier que le processus tourne
+        out, rc = _wsl(["pgrep", "-x", "asterisk"])
+        if rc != 0:
+            # Tentative de demarrage direct
+            logger.warning("[Asterisk] Service ne repond pas, demarrage direct...")
+            _wsl(["bash", "-c", "nohup asterisk -f > /tmp/ast.log 2>&1 &"])
+            _time.sleep(5)
+            out2, rc2 = _wsl(["pgrep", "-x", "asterisk"])
+            if rc2 != 0:
+                logger.error(
+                    "[Asterisk] Impossible de demarrer Asterisk. "
+                    "Lancez WSL et tapez : sudo service asterisk start"
+                )
+                return
+
+        pid = out.strip().split("\n")[0]
+        logger.info(f"[Asterisk] Asterisk actif (PID={pid})")
+
+        # 6. Verifier AMI sur localhost (networkingMode=mirrored)
+        # Avec mirrored networking, localhost:5038 est accessible directement
+        for attempt in range(5):
+            _time.sleep(2)
+            status = check_asterisk_available()
+            if status["available"]:
+                logger.info(f"[Asterisk] AMI disponible sur {status['host']}:5038")
+                return
+            logger.debug(f"[Asterisk] AMI pas encore pret (tentative {attempt+1}/5)...")
+
+        # Dernier essai : essayer l'IP WSL directement en fallback
+        try:
+            wsl_ip_out, _ = _wsl(["hostname", "-I"])
+            ips = wsl_ip_out.strip().split()
+            if ips:
+                import socket as _sock
+                for ip in ips:
+                    try:
+                        s = _sock.socket(_sock.AF_INET, _sock.SOCK_STREAM)
+                        s.settimeout(2)
+                        s.connect((ip.strip(), 5038))
+                        s.close()
+                        logger.info(f"[Asterisk] AMI accessible via IP WSL directe : {ip}:5038")
+                        return
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+        logger.warning(
+            "[Asterisk] AMI non accessible apres demarrage. "
+            "Verifiez /etc/asterisk/manager.conf dans WSL. "
+            "Conseil : relancez setup_microsip.ps1 en Admin."
+        )
+
+    t = threading.Thread(target=_run, daemon=True, name="asterisk-autostart")
+    t.start()
+
+# ══════════════════════════════════════════════════════════
+#  APPRENTISSAGE EPHEMERE (session uniquement — identique à app.py)
+#  Oublié dès le redémarrage du serveur (in-memory uniquement).
+# ══════════════════════════════════════════════════════════
+
+# Store global partagé entre toutes les sessions user_app
+# (oublié au redémarrage — comportement identique à app.py)
+_global_learned_responses: list = []
+
+
+def _session_learn_store(sess: dict, problem_text: str, response_text: str):
+    """
+    Stocke une réponse apprise à deux niveaux :
+      1. Store global (_global_learned_responses) — partagé, oublié au restart
+      2. Store session (sess["session_learned_responses"]) — compatibilité
+    Identique à app.py _session_learn_store().
+    """
+    global _global_learned_responses
+
+    entry = {
+        "problem_text":  problem_text.strip(),
+        "response_text": response_text.strip(),
+        "embedding":     None,
+    }
+
+    # Tenter de calculer l'embedding si le modèle est disponible
+    try:
+        if response_eng.model is not None:
+            entry["embedding"] = response_eng.model.encode([problem_text])[0]
+            logger.info(f"[Learning] Embedding calculé pour '{problem_text[:50]}'")
+    except Exception as _e:
+        logger.warning(f"[Learning] Embedding échoué (texte seul) : {_e}")
+
+    _global_learned_responses.append(entry)
+    sess.setdefault("session_learned_responses", []).append(entry)
+    logger.info(
+        f"[Learning] Réponse mémorisée (total global: {len(_global_learned_responses)}) : "
+        f"'{problem_text[:50]}' → '{response_text[:50]}'"
+    )
+
+
+def _find_session_learned(sess: dict, query_text: str):
+    """
+    Cherche si query_text correspond à un problème déjà résolu par un agent
+    humain dans cette session (ou dans le store global de la session courante).
+    Identique à app.py _find_session_learned_response().
+    Retourne la réponse apprise ou None.
+    """
+    global _global_learned_responses
+
+    learned = _global_learned_responses or sess.get("session_learned_responses", [])
+    if not learned:
+        return None
+
+    logger.info(f"[Learning] Vérification : {len(learned)} réponse(s) pour '{query_text[:50]}'")
+
+    try:
+        import numpy as np
+        has_numpy = True
+    except ImportError:
+        has_numpy = False
+
+    # Pré-calculer embedding de la requête
+    q_emb = None
+    try:
+        if has_numpy and response_eng.model is not None:
+            q_emb = response_eng.model.encode([query_text])[0]
+    except Exception:
+        pass
+
+    best_score, best_resp = 0.0, None
+
+    for entry in learned:
+        problem = entry.get("problem_text", "").strip()
+        resp    = entry.get("response_text", "")
+        if not problem or not resp:
+            continue
+
+        score = 0.0
+
+        # Couche 1 : correspondance exacte
+        if query_text.strip() == problem:
+            score = 1.0
+        # Couche 2 : sous-chaîne
+        elif problem in query_text or query_text in problem:
+            score = 0.92
+        else:
+            # Couche 3 : recoupement de mots-clés
+            q_words = set(w for w in query_text.split() if len(w) > 2)
+            p_words = set(w for w in problem.split()    if len(w) > 2)
+            common  = q_words & p_words
+            if len(common) >= 2:
+                kw_score = len(common) / max(len(q_words), len(p_words), 1)
+                score = min(0.90, kw_score * 1.1)
+
+            # Couche 4 : similarité cosinus
+            if has_numpy and q_emb is not None:
+                emb = entry.get("embedding")
+                if emb is not None:
+                    try:
+                        import numpy as np
+                        norm = (float(np.linalg.norm(q_emb)) *
+                                float(np.linalg.norm(emb))) + 1e-9
+                        cos  = float(np.dot(q_emb, emb)) / norm
+                        if cos > score:
+                            score = cos
+                    except Exception:
+                        pass
+
+        if score > best_score:
+            best_score = score
+            best_resp  = resp
+
+    MIN_SCORE = 0.62
+    if best_score >= MIN_SCORE and best_resp:
+        logger.info(f"[Learning] Réponse trouvée (score={best_score:.3f}) pour '{query_text[:50]}'")
+        return best_resp
+
+    return None
+
+
+# Démarrage automatique Asterisk dès le lancement de user_app.py
+_auto_start_asterisk()
 
 # ── Flask app ─────────────────────────────────────────────
 app = Flask(__name__,
@@ -115,24 +354,30 @@ user_conv_state: dict = {}
 # ══════════════════════════════════════════════════════════
 
 def login_required(f):
-    """Décorateur : redirige vers login si non connecté."""
+    """Décorateur : redirige vers login si non connecté ou session invalide."""
     @wraps(f)
     def decorated(*args, **kwargs):
-        if "user_id" not in session:
+        uid = session.get("user_id")
+        if uid is None:
+            return redirect(url_for("login"))
+        # Ancien user_id MySQL (entier) → session invalide → re-login
+        if isinstance(uid, int) or (isinstance(uid, str) and uid.isdigit()):
+            session.clear()
             return redirect(url_for("login"))
         return f(*args, **kwargs)
     return decorated
 
 
 def get_current_user():
-    """Retourne les infos de l'utilisateur connecté."""
+    """Retourne les infos de l'utilisateur connecté depuis Firebase."""
     if "user_id" not in session:
         return None
-    return db_execute(
-        "SELECT id, nom, prenom, email, telephone, avatar_color, created_at "
-        "FROM users WHERE id = %s AND is_active = 1",
-        (session["user_id"],), fetchone=True
-    )
+    uid = session["user_id"]
+    # Vider la session si c'est un ancien user_id MySQL (entier)
+    if isinstance(uid, int) or (isinstance(uid, str) and uid.isdigit()):
+        session.clear()
+        return None
+    return user_get_by_id(uid)
 
 
 # ══════════════════════════════════════════════════════════
@@ -150,7 +395,8 @@ def _get_conv_state(conv_session_id: str) -> dict:
             "original_problem": "",
             "solution_given": False,
             "transferred": False,
-            "last_transferred_problem": "",
+            "last_transferred_problem": "",   # problème qui a déclenché le dernier transfert
+            "session_learned_responses": [],  # réponses apprises dans cette session (éphémères)
         }
     return user_conv_state[conv_session_id]
 
@@ -213,11 +459,6 @@ def _localize_response(text: str, entities: dict) -> str:
     return text
 
 
-def _find_session_learned(sess: dict, user_text: str):
-    """Cherche si un agent humain a déjà résolu ce problème dans la session."""
-    if not sess.get("transferred"):
-        return None
-    return None  # Simplifié pour l'interface user
 
 
 # ══════════════════════════════════════════════════════════
@@ -289,6 +530,13 @@ def process_user_message(conv_session_id: str, user_text: str) -> dict:
     ml_conf      = nlu_result.get("confidence", 0)
     service_type = nlu_result.get("entities", {}).get("service_type", "")
     _update_entities(sess, nlu_result)
+    # Stocker le dernier résultat NLU dans la session pour le chat endpoint
+    sess["last_nlu"] = {
+        "intent":       intent,
+        "confidence":   round(float(ml_conf) * 100) if ml_conf <= 1 else int(ml_conf),
+        "sentiment":    nlu_result.get("sentiment", ""),
+        "service_type": service_type,
+    }
 
     # ── active_intent : intent du RECORD (fiable) ou NLU sinon ───
     active_intent = sess.get("pending_intent") or intent
@@ -296,6 +544,7 @@ def process_user_message(conv_session_id: str, user_text: str) -> dict:
     # ── Numéro de demande demandé → transfert immédiat ────
     if stage == "waiting_for_request_number":
         sess["transferred"] = True
+        sess["last_transferred_problem"] = sess.get("original_problem") or user_text
         bot_resp = Config.TRANSFER_MESSAGE
         transfer.create_ticket(session_id=conv_session_id,
                                history=sess["history"],
@@ -311,6 +560,18 @@ def process_user_message(conv_session_id: str, user_text: str) -> dict:
 
     # ── ÉTAPE 1 : Poser une question de clarification ─────
     if stage == "initial":
+        # ── Apprentissage éphémère : vérifier si ce problème a déjà été
+        # résolu par un agent humain dans cette session ou dans la session courante ──
+        _learned_resp = _find_session_learned(sess, user_text)
+        if _learned_resp:
+            bot_resp = _localize_response(_learned_resp, sess.get("collected_entities"))
+            sess["history"].append(("bot", bot_resp))
+            sess["solution_given"] = True
+            logger.info(f"[{conv_session_id}] Réponse apprise (session learning) utilisée")
+            return {"bot_response": bot_resp, "session_ended": False,
+                    "transferred": False, "statut": "resolue",
+                    "sujet": active_intent, "service_type": service_type}
+
         clari = response_eng.find_clarification_question(
             user_text, nlu_intent=intent, nlu_service=service_type
         )
@@ -349,6 +610,7 @@ def process_user_message(conv_session_id: str, user_text: str) -> dict:
             sess["history"].append(("bot", bot_resp))
             sess["stage"]          = "initial"
             sess["transferred"]    = True
+            sess["last_transferred_problem"] = sess.get("original_problem") or user_text
             sess["solution_given"] = True
             return {"bot_response": bot_resp, "session_ended": False,
                     "transferred": True, "statut": "transferee"}
@@ -362,6 +624,7 @@ def process_user_message(conv_session_id: str, user_text: str) -> dict:
                                    rag_confidence=clari["confidence"])
             sess["history"].append(("bot", bot_resp))
             sess["transferred"]    = True
+            sess["last_transferred_problem"] = sess.get("original_problem") or user_text
             sess["solution_given"] = True
             return {"bot_response": bot_resp, "session_ended": False,
                     "transferred": True, "statut": "transferee"}
@@ -416,6 +679,7 @@ def process_user_message(conv_session_id: str, user_text: str) -> dict:
                                rag_confidence=rag_conf)
         sess["history"].append(("bot", bot_resp))
         sess["transferred"]    = True
+        sess["last_transferred_problem"] = sess.get("original_problem") or user_text
         sess["stage"]          = "initial"
         sess["pending_intent"] = ""
         sess["solution_given"] = True
@@ -436,6 +700,7 @@ def process_user_message(conv_session_id: str, user_text: str) -> dict:
     )
     if last_bot and bot_resp.strip() == last_bot.strip():
         sess["transferred"] = True
+        sess["last_transferred_problem"] = sess.get("original_problem") or user_text
         bot_resp = Config.TRANSFER_MESSAGE
         transfer.create_ticket(session_id=conv_session_id,
                                history=sess["history"],
@@ -484,19 +749,12 @@ def login():
         email    = request.form.get("email", "").strip().lower()
         password = request.form.get("password", "")
 
-        user = db_execute(
-            "SELECT * FROM users WHERE email = %s AND is_active = 1",
-            (email,), fetchone=True
-        )
+        user = user_get_by_email(email)
         if user and check_password_hash(user["password_hash"], password):
-            session["user_id"]   = user["id"]
-            session["user_nom"]  = user["nom"]
+            session["user_id"]    = user["id"]
+            session["user_nom"]   = user["nom"]
             session["user_prenom"] = user["prenom"]
-            # Mettre à jour last_login
-            db_execute(
-                "UPDATE users SET last_login = NOW() WHERE id = %s",
-                (user["id"],)
-            )
+            user_update_last_login(user["id"])
             return redirect(url_for("dashboard"))
         else:
             error = "Email ou mot de passe incorrect."
@@ -526,23 +784,15 @@ def register():
         elif len(password) < 6:
             error = "Le mot de passe doit contenir au moins 6 caractères."
         else:
-            # Vérifier email unique
-            existing = db_execute(
-                "SELECT id FROM users WHERE email = %s", (email,), fetchone=True
-            )
+            # Vérifier email unique dans Firebase
+            existing = user_get_by_email(email)
             if existing:
                 error = "Cet email est déjà utilisé."
             else:
                 pwd_hash = generate_password_hash(password)
-                # Couleur avatar aléatoire parmi la palette TT
                 colors   = ["#6B2FA0", "#00B4D8", "#E8002D", "#1B5E20", "#1565C0"]
                 color    = colors[hash(email) % len(colors)]
-                user_id  = db_execute(
-                    "INSERT INTO users (nom, prenom, email, telephone, "
-                    "password_hash, avatar_color) VALUES (%s,%s,%s,%s,%s,%s)",
-                    (nom, prenom, email, telephone, pwd_hash, color),
-                    lastrowid=True
-                )
+                user_id  = user_create(nom, prenom, email, pwd_hash, telephone, color)
                 session["user_id"]    = user_id
                 session["user_nom"]   = nom
                 session["user_prenom"] = prenom
@@ -580,42 +830,36 @@ def dashboard():
 @app.route("/api/user/chat", methods=["POST"])
 @login_required
 def api_chat():
-    data      = request.get_json()
-    user_text = (data.get("message") or "").strip()
-    conv_id_db = data.get("conversation_id")   # ID DB de la conversation
+    data       = request.get_json()
+    user_text  = (data.get("message") or "").strip()
+    conv_id_db = data.get("conversation_id")   # ID Firebase de la conversation
 
     if not user_text:
         return jsonify({"error": "Message vide"}), 400
 
     user_id = session["user_id"]
 
-    # ── Récupérer ou créer la conversation en DB ──────────
+    # ── Récupérer ou créer la conversation dans Firebase ──
+    conv = None
     if conv_id_db:
-        conv = db_execute(
-            "SELECT * FROM conversations WHERE id = %s AND user_id = %s",
-            (conv_id_db, user_id), fetchone=True
-        )
-    else:
-        conv = None
+        conv = conversation_get(conv_id_db)
+        # Vérifier que la conversation appartient bien à cet user
+        if conv and conv.get("user_id") != user_id:
+            conv = None
 
     if not conv:
-        # Nouvelle conversation
-        new_session_id = str(uuid.uuid4())
-        conv_id_db = db_execute(
-            "INSERT INTO conversations (user_id, session_id, statut) "
-            "VALUES (%s, %s, 'en_cours')",
-            (user_id, new_session_id), lastrowid=True
-        )
-        conv = {"id": conv_id_db, "session_id": new_session_id,
-                "statut": "en_cours", "sujet": None}
+        # Nouvelle conversation — l'ID Firebase sert de session_id bot
+        conv_id_db = conversation_create(user_id)
+        conv = {"id": conv_id_db, "user_id": user_id,
+                "statut": "en_cours", "sujet": "", "service_type": ""}
 
-    session_id = conv["session_id"]
+    # L'ID Firebase de la conversation est utilisé comme clé d'état bot
+    session_id = conv_id_db
 
-    # ── Sauvegarder message user ──────────────────────────
-    db_execute(
-        "INSERT INTO messages (conversation_id, role, content) VALUES (%s, %s, %s)",
-        (conv_id_db, "user", user_text), lastrowid=True
-    )
+    # ── Sauvegarder le message utilisateur (NLU ajouté après traitement) ──
+    # Le message est sauvegardé d'abord sans NLU, puis mis à jour après
+    # le traitement bot (pour avoir les données NLU disponibles).
+    # Alternative simple : sauvegarder après process_user_message.
 
     # ── Traitement bot ────────────────────────────────────
     try:
@@ -628,30 +872,230 @@ def api_chat():
 
     bot_resp = result["bot_response"]
 
-    # ── Sauvegarder réponse bot ───────────────────────────
-    db_execute(
-        "INSERT INTO messages (conversation_id, role, content) VALUES (%s, %s, %s)",
-        (conv_id_db, "bot", bot_resp), lastrowid=True
-    )
+    # ── Récupérer le résultat NLU stocké par process_user_message ──
+    _sess_state = user_conv_state.get(session_id, {})
+    _nlu_data   = _sess_state.get("last_nlu", None)
 
-    # ── Mettre à jour la conversation ────────────────────
+    # ── Sauvegarder le message utilisateur (avec NLU si disponible) ──
+    message_add(conv_id_db, user_id, "user", user_text, nlu_data=_nlu_data)
+
+    # ── Sauvegarder la réponse bot ────────────────────────
+    message_add(conv_id_db, user_id, "bot", bot_resp)
+
+    # ── Mettre à jour la conversation Firebase ───────────
     new_statut  = result.get("statut", "en_cours")
-    new_sujet   = result.get("sujet") or conv.get("sujet")
-    new_service = result.get("service_type") or conv.get("service_type")
+    new_sujet   = result.get("sujet")   or conv.get("sujet",        "")
+    new_service = result.get("service_type") or conv.get("service_type", "")
 
-    db_execute(
-        "UPDATE conversations SET statut=%s, sujet=%s, service_type=%s, "
-        "updated_at=NOW() WHERE id=%s",
-        (new_statut, new_sujet, new_service, conv_id_db)
-    )
+    conversation_update(conv_id_db,
+                        statut=new_statut,
+                        sujet=new_sujet,
+                        service_type=new_service)
+
+    # ── Transfert vers agent humain → appel Asterisk ─────
+    ami_called         = False
+    asterisk_available = False
+    ami_reason         = ""          # Explication lisible pour le badge JS
+
+    if result.get("transferred"):
+        user_info = get_current_user() or {}
+        phone     = (user_info.get("telephone") or "").strip()
+        u_name    = f"{user_info.get('prenom','')} {user_info.get('nom','')}".strip()
+        ticket_id = conv_id_db[:8]
+
+        logger.info(
+            f"[Asterisk] Transfert detecte — user={session.get('user_id')} "
+            f"phone='{phone}' name='{u_name}'"
+        )
+
+        # Récupérer le texte du problème qui a déclenché le transfert
+        _transfer_sess = user_conv_state.get(session_id, {})
+        problem_text   = _transfer_sess.get("last_transferred_problem", "")
+
+        # Stocker le problème dans Firebase pour que le back-office puisse l'afficher
+        if problem_text:
+            try:
+                conversation_update(conv_id_db, last_problem=problem_text)
+            except Exception as _cp_err:
+                logger.warning(f"[Asterisk] Echec stockage last_problem : {_cp_err}")
+
+        if not phone:
+            # Pas de numero → pas d'appel, pas besoin de tester l'AMI
+            ami_reason         = "no_phone"
+            asterisk_available = False
+            logger.warning(
+                f"[Asterisk] Transfert ignore : numero manquant pour "
+                f"user {session.get('user_id')}"
+            )
+        else:
+            # Appel direct — originate_call() fait lui-meme le check AMI
+            # (evite la double-connexion TCP qui perturbait le banner Asterisk)
+            ami_result         = _asterisk_call(
+                caller_number=phone,
+                ticket_id=ticket_id,
+                user_name=u_name,
+                problem_text=problem_text,
+            )
+            ami_called         = ami_result.get("success", False)
+            asterisk_available = ami_called   # True seulement si l'AMI a repondu
+
+            if ami_called:
+                ami_reason = "ok"
+            else:
+                msg = ami_result.get("message", "").lower()
+                ami_reason = (
+                    "no_phone"   if "manquant" in msg or "phone" in msg
+                    else "ami_down"
+                )
+            logger.info(f"[Asterisk] {ami_result.get('message', str(ami_result))}")
 
     return jsonify({
-        "bot_response":    bot_resp,
-        "conversation_id": conv_id_db,
-        "session_ended":   result.get("session_ended", False),
-        "transferred":     result.get("transferred", False),
-        "statut":          new_statut,
+        "bot_response":       bot_resp,
+        "conversation_id":    conv_id_db,
+        "session_ended":      result.get("session_ended", False),
+        "transferred":        result.get("transferred", False),
+        "ami_called":         ami_called,          # True si appel Asterisk initie
+        "asterisk_available": asterisk_available,  # Etat AMI au moment du transfert
+        "ami_reason":         ami_reason,          # 'ok'|'no_phone'|'ami_down'|'originate_failed'
+        "statut":             new_statut,
     })
+
+
+# ══════════════════════════════════════════════════════════
+#  API RÉPONSE AGENT HUMAIN — apprentissage de session
+# ══════════════════════════════════════════════════════════
+
+@app.route("/api/user/human_response", methods=["POST"])
+@login_required
+def api_user_human_response():
+    """
+    Reçoit la réponse fournie par l'agent humain après un transfert.
+    Stocke la réponse dans la mémoire éphémère de session (_global_learned_responses)
+    afin que le bot puisse l'utiliser lors des prochaines interactions.
+
+    Body JSON :
+        ticket_id  : identifiant du ticket créé lors du transfert
+        response   : texte de la réponse de l'agent
+        session_id : identifiant de la session de conversation (conv_session_id)
+    """
+    data      = request.get_json(silent=True) or {}
+    ticket_id = data.get("ticket_id", "")
+    response  = (data.get("response") or "").strip()
+    sid       = data.get("session_id", "")
+
+    if not response:
+        return jsonify({"error": "Réponse vide"}), 400
+
+    # Résoudre le ticket côté Firestore
+    try:
+        transfer.resolve_ticket(ticket_id, response)
+    except Exception as e:
+        logger.warning(f"[human_response] Erreur resolve_ticket({ticket_id}) : {e}")
+
+    # Récupérer la session de conversation
+    sess = user_conv_state.get(sid, {})
+
+    # Déterminer le texte du problème (ce qui avait déclenché le transfert)
+    history      = sess.get("history", [])
+    last_user    = next((t for r, t in reversed(history) if r == "user"), "")
+    problem_text = sess.get("last_transferred_problem") or last_user
+
+    # Stocker la réponse dans la mémoire éphémère
+    learned = False
+    if problem_text:
+        _session_learn_store(sess, problem_text, response)
+        learned = True
+        logger.info(
+            f"[human_response] Appris : '{problem_text[:60]}' → '{response[:60]}'"
+        )
+
+    # Remettre la session en état initial pour que l'utilisateur puisse continuer
+    sess["solution_given"]           = False
+    sess["transferred"]              = False
+    sess["stage"]                    = "initial"
+    sess["pending_intent"]           = ""
+    sess["last_transferred_problem"] = ""
+
+    return jsonify({"success": True, "learned": learned})
+
+
+# ══════════════════════════════════════════════════════════
+#  API INTERNE — Réponse agent (appelée par app.py back-office)
+#  Pas de login_required : accès par secret interne uniquement
+# ══════════════════════════════════════════════════════════
+
+_INTERNAL_SECRET = "tt_backoffice_2026"   # partagé avec app.py
+
+@app.route("/api/internal/agent_reply", methods=["POST"])
+def api_internal_agent_reply():
+    """
+    Endpoint interne (non authentifié) pour recevoir la réponse de l'agent
+    humain depuis le back-office app.py.
+    Vérifie le header X-Internal-Secret avant traitement.
+
+    Body JSON :
+        ticket_id  : identifiant Firebase de la conversation
+        response   : texte de la réponse de l'agent
+        session_id : identifiant de la session (= conv_id Firebase)
+    """
+    # Vérification secret interne
+    if request.headers.get("X-Internal-Secret") != _INTERNAL_SECRET:
+        return jsonify({"error": "Unauthorized"}), 401
+
+    data      = request.get_json(silent=True) or {}
+    ticket_id = data.get("ticket_id", "")
+    response  = (data.get("response") or "").strip()
+    sid       = data.get("session_id", "")
+
+    if not response:
+        return jsonify({"error": "Réponse vide"}), 400
+
+    # Résoudre le ticket côté Firestore
+    try:
+        transfer.resolve_ticket(ticket_id, response)
+    except Exception as e:
+        logger.warning(f"[internal_agent_reply] Erreur resolve_ticket({ticket_id}) : {e}")
+
+    # Récupérer la session de conversation en mémoire
+    sess = user_conv_state.get(sid, {})
+
+    # Déterminer le texte du problème
+    history      = sess.get("history", [])
+    last_user    = next((t for r, t in reversed(history) if r == "user"), "")
+    problem_text = sess.get("last_transferred_problem") or last_user
+
+    # Stocker la réponse apprise en mémoire éphémère
+    learned = False
+    if problem_text:
+        _session_learn_store(sess, problem_text, response)
+        learned = True
+        logger.info(
+            f"[internal_agent_reply] Appris : '{problem_text[:60]}' → '{response[:60]}'"
+        )
+    else:
+        logger.info(
+            f"[internal_agent_reply] Session {sid!r} introuvable en mémoire — "
+            "réponse stockée dans le store global uniquement"
+        )
+        # Même si la session n'est plus en mémoire, stocker dans le store global
+        _session_learn_store({}, ticket_id or "unknown", response)
+        learned = True
+
+    # Remettre la session en état initial
+    if sess:
+        sess["solution_given"]           = False
+        sess["transferred"]              = False
+        sess["stage"]                    = "initial"
+        sess["pending_intent"]           = ""
+        sess["last_transferred_problem"] = ""
+
+    # Mettre à jour le statut Firebase
+    try:
+        conversation_update(ticket_id, statut="resolue")
+    except Exception as _e:
+        logger.warning(f"[internal_agent_reply] Echec mise à jour statut : {_e}")
+
+    return jsonify({"success": True, "learned": learned, "session_found": bool(sess)})
 
 
 # ══════════════════════════════════════════════════════════
@@ -661,70 +1105,67 @@ def api_chat():
 @app.route("/api/user/history")
 @login_required
 def api_history():
-    user_id = session["user_id"]
-    reclamations = db_execute(
-        "SELECT reclamation_id, sujet, service_type, statut, created_at, "
-        "updated_at, nb_messages, apercu "
-        "FROM v_user_reclamations "
-        "WHERE user_id = %s "
-        "ORDER BY created_at DESC "
-        "LIMIT 50",
-        (user_id,), fetchall=True
-    )
-    # Sérialiser datetime
-    for r in reclamations:
-        if r.get("created_at"):
-            r["created_at"] = r["created_at"].strftime("%d/%m/%Y %H:%M")
-        if r.get("updated_at"):
-            r["updated_at"] = r["updated_at"].strftime("%d/%m/%Y %H:%M")
-    return jsonify({"reclamations": reclamations})
+    try:
+        user_id = session["user_id"]
+        reclamations = reclamations_get_by_user(user_id, limit=50)
+        return jsonify({"reclamations": reclamations})
+    except Exception as e:
+        logger.error(f"[api_history] Erreur Firebase : {e}", exc_info=True)
+        return jsonify({"reclamations": [], "error": str(e)}), 500
 
 
-@app.route("/api/user/conversation/<int:conv_id>")
+@app.route("/api/user/conversation/<conv_id>")
 @login_required
 def api_conversation_detail(conv_id):
-    user_id = session["user_id"]
-    # Vérifier que cette conversation appartient à l'user
-    conv = db_execute(
-        "SELECT * FROM conversations WHERE id = %s AND user_id = %s",
-        (conv_id, user_id), fetchone=True
-    )
-    if not conv:
-        return jsonify({"error": "Non trouvé"}), 404
+    try:
+        user_id = session["user_id"]
 
-    messages = db_execute(
-        "SELECT role, content, timestamp FROM messages "
-        "WHERE conversation_id = %s ORDER BY timestamp ASC",
-        (conv_id,), fetchall=True
-    )
-    for m in messages:
-        if m.get("timestamp"):
-            m["timestamp"] = m["timestamp"].strftime("%d/%m/%Y %H:%M:%S")
+        conv = conversation_get(conv_id)
+        if not conv or conv.get("user_id") != user_id:
+            return jsonify({"error": "Non trouvé"}), 404
 
-    # Sérialiser conv
-    if conv.get("created_at"):
-        conv["created_at"] = conv["created_at"].strftime("%d/%m/%Y %H:%M")
-    if conv.get("updated_at"):
-        conv["updated_at"] = conv["updated_at"].strftime("%d/%m/%Y %H:%M")
+        msgs_raw = messages_get_by_conversation(conv_id)
 
-    return jsonify({"conversation": dict(conv), "messages": messages})
+        messages = []
+        for m in msgs_raw:
+            created = m.get("created_at")
+            ts = ""
+            if hasattr(created, "strftime"):
+                ts = created.strftime("%d/%m/%Y %H:%M:%S")
+            elif created:
+                ts = str(created)
+            messages.append({
+                "role":      m.get("role", ""),
+                "content":   m.get("content", ""),
+                "timestamp": ts,
+            })
+
+        # Sérialiser les dates de la conversation
+        c = dict(conv)
+        for field in ("created_at", "updated_at"):
+            v = c.get(field)
+            if hasattr(v, "strftime"):
+                c[field] = v.strftime("%d/%m/%Y %H:%M")
+            elif v:
+                c[field] = str(v)
+
+        return jsonify({"conversation": c, "messages": messages})
+    except Exception as e:
+        logger.error(f"[api_conversation_detail] Erreur Firebase : {e}", exc_info=True)
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route("/api/user/new_conversation", methods=["POST"])
 @login_required
 def api_new_conversation():
     user_id = session["user_id"]
-    new_session_id = str(uuid.uuid4())
-    conv_id = db_execute(
-        "INSERT INTO conversations (user_id, session_id, statut) "
-        "VALUES (%s, %s, 'en_cours')",
-        (user_id, new_session_id), lastrowid=True
-    )
-    # Réinitialiser l'état mémoire
-    if new_session_id in user_conv_state:
-        del user_conv_state[new_session_id]
+    conv_id = conversation_create(user_id)
 
-    return jsonify({"conversation_id": conv_id, "session_id": new_session_id})
+    # Réinitialiser l'état mémoire du bot pour cette conversation
+    if conv_id in user_conv_state:
+        del user_conv_state[conv_id]
+
+    return jsonify({"conversation_id": conv_id})
 
 
 @app.route("/api/user/profile")
@@ -733,39 +1174,108 @@ def api_profile():
     user = get_current_user()
     if not user:
         return jsonify({"error": "Non trouvé"}), 404
-    if user.get("created_at"):
-        user["created_at"] = user["created_at"].strftime("%d/%m/%Y")
-    return jsonify({"user": dict(user)})
+    u = dict(user)
+    created = u.get("created_at")
+    if hasattr(created, "strftime"):
+        u["created_at"] = created.strftime("%d/%m/%Y")
+    elif created:
+        u["created_at"] = str(created)
+    return jsonify({"user": u})
 
 
 @app.route("/api/user/stats")
 @login_required
 def api_stats():
-    user_id = session["user_id"]
-    total = db_execute(
-        "SELECT COUNT(*) AS total FROM conversations WHERE user_id=%s",
-        (user_id,), fetchone=True
-    )
-    resolues = db_execute(
-        "SELECT COUNT(*) AS cnt FROM conversations "
-        "WHERE user_id=%s AND statut='resolue'",
-        (user_id,), fetchone=True
-    )
-    transferees = db_execute(
-        "SELECT COUNT(*) AS cnt FROM conversations "
-        "WHERE user_id=%s AND statut='transferee'",
-        (user_id,), fetchone=True
-    )
-    en_cours = db_execute(
-        "SELECT COUNT(*) AS cnt FROM conversations "
-        "WHERE user_id=%s AND statut='en_cours'",
-        (user_id,), fetchone=True
-    )
+    try:
+        stats = user_stats(session["user_id"])
+        return jsonify(stats)
+    except Exception as e:
+        logger.error(f"[api_stats] Erreur Firebase : {e}", exc_info=True)
+        return jsonify({"total": 0, "resolues": 0, "transferees": 0, "en_cours": 0, "error": str(e)}), 500
+
+
+@app.route("/api/user/asterisk_status")
+@login_required
+def api_asterisk_status():
+    """Vérifie si Asterisk est disponible (pour l'interface admin/debug)."""
+    status = check_asterisk_available()
+    return jsonify(status)
+
+
+@app.route("/api/user/ami_debug")
+@login_required
+def api_ami_debug():
+    """
+    Endpoint de diagnostic complet AMI + profil utilisateur.
+    Ouvrir dans le navigateur : http://localhost:5001/api/user/ami_debug
+    Montre exactement pourquoi l'appel AMI echoue ou reussit.
+    """
+    from asterisk_ami import get_wsl_ip
+    import socket
+
+    user_info = get_current_user() or {}
+    phone     = (user_info.get("telephone") or "").strip()
+    u_name    = f"{user_info.get('prenom','')} {user_info.get('nom','')}".strip()
+
+    ami_host  = get_wsl_ip()
+    ami_port  = 5038
+
+    # Test 1 : connexion TCP port 5038
+    tcp_ok    = False
+    tcp_error = ""
+    banner    = ""
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(3)
+        s.connect((ami_host, ami_port))
+        banner = s.recv(256).decode(errors="replace").strip()
+        s.close()
+        tcp_ok = True
+    except Exception as e:
+        tcp_error = str(e)
+
+    # Test 2 : login AMI
+    ami_login_ok    = False
+    ami_login_error = ""
+    if tcp_ok:
+        try:
+            from asterisk_ami import AmiClient, AMI_USER, AMI_SECRET
+            with AmiClient(ami_host) as ami:
+                ami_login_ok = ami.connect()
+                if not ami_login_ok:
+                    ami_login_error = "Login refusé (vérifiez manager.conf)"
+        except Exception as e:
+            ami_login_error = str(e)
+
     return jsonify({
-        "total":      total["total"]       if total else 0,
-        "resolues":   resolues["cnt"]      if resolues else 0,
-        "transferees": transferees["cnt"]  if transferees else 0,
-        "en_cours":   en_cours["cnt"]      if en_cours else 0,
+        "user": {
+            "id":        session.get("user_id", "?"),
+            "name":      u_name or "—",
+            "telephone": phone or "MANQUANT — profil sans numéro !",
+            "phone_ok":  bool(phone),
+        },
+        "asterisk": {
+            "wsl_ip":        ami_host,
+            "ami_port":      ami_port,
+            "tcp_reachable": tcp_ok,
+            "tcp_error":     tcp_error or None,
+            "ami_banner":    banner or None,
+            "login_ok":      ami_login_ok,
+            "login_error":   ami_login_error or None,
+        },
+        "conclusion": (
+            "✅ Tout est OK — l'appel devrait fonctionner"
+            if (tcp_ok and ami_login_ok and phone)
+            else (
+                "❌ Numéro de téléphone MANQUANT dans le profil Firebase"
+                if not phone
+                else (
+                    "❌ Port AMI 5038 inaccessible — Asterisk ne tourne pas dans WSL"
+                    if not tcp_ok
+                    else "❌ Login AMI échoué — vérifiez manager.conf (ttadmin / TT@2026)"
+                )
+            )
+        ),
     })
 
 

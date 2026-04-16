@@ -1343,6 +1343,95 @@ def pending_tickets():
 
 
 # ════════════════════════════════════════════════════════════
+#  BACK-OFFICE — Monitoring conversations utilisateurs
+# ════════════════════════════════════════════════════════════
+
+@app.route("/api/live_conversations", methods=["GET"])
+def live_conversations():
+    """
+    Retourne les conversations recentes de TOUS les utilisateurs (back-office).
+    Permet de monitorer en temps reel les echanges user_app ↔ bot dans app.py.
+    """
+    try:
+        from firebase_config import conversations_get_all_recent
+        limit = min(int(request.args.get("limit", 30)), 100)
+        convs = conversations_get_all_recent(limit=limit)
+        return jsonify({"conversations": convs, "total": len(convs)})
+    except Exception as e:
+        logger.error(f"[live_conversations] Erreur : {e}", exc_info=True)
+        return jsonify({"conversations": [], "total": 0, "error": str(e)})
+
+
+@app.route("/api/conv_messages/<conv_id>", methods=["GET"])
+def conv_messages(conv_id: str):
+    """
+    Retourne les messages d'une conversation specifique (back-office).
+    Inclut également le champ last_problem (problème signalé au transfert)
+    et les données NLU par message utilisateur.
+    """
+    try:
+        from firebase_config import messages_get_by_conversation, conversation_get
+        msgs = messages_get_by_conversation(conv_id)
+        # Serialiser les timestamps
+        for m in msgs:
+            for field in ("created_at",):
+                v = m.get(field)
+                if hasattr(v, "strftime"):
+                    m[field] = v.strftime("%d/%m/%Y %H:%M")
+                elif v:
+                    m[field] = str(v)
+        # Récupérer le texte du problème stocké lors du transfert
+        last_problem = ""
+        try:
+            conv_doc = conversation_get(conv_id)
+            if conv_doc:
+                last_problem = conv_doc.get("last_problem", "")
+        except Exception:
+            pass
+        return jsonify({"messages": msgs, "conv_id": conv_id,
+                        "last_problem": last_problem})
+    except Exception as e:
+        logger.error(f"[conv_messages] Erreur : {e}", exc_info=True)
+        return jsonify({"messages": [], "error": str(e)})
+
+
+_USER_APP_INTERNAL_SECRET = "tt_backoffice_2026"   # doit correspondre à user_app.py
+
+@app.route("/api/agent_reply", methods=["POST"])
+def agent_reply_proxy():
+    """
+    Proxy back-office → user_app (port 5001) pour transmettre la réponse
+    de l'agent humain et déclencher l'apprentissage de session.
+    Utilise le endpoint interne /api/internal/agent_reply (sans login_required).
+    """
+    import urllib.request, urllib.error
+    data = request.get_json(silent=True) or {}
+    payload = json.dumps(data).encode("utf-8")
+    try:
+        req = urllib.request.Request(
+            "http://127.0.0.1:5001/api/internal/agent_reply",
+            data=payload,
+            headers={
+                "Content-Type":     "application/json",
+                "X-Internal-Secret": _USER_APP_INTERNAL_SECRET,
+            },
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            body = resp.read().decode("utf-8")
+            return body, resp.status, {"Content-Type": "application/json"}
+    except urllib.error.HTTPError as e:
+        body = e.read().decode("utf-8", errors="replace")
+        logger.warning(f"[agent_reply_proxy] HTTPError {e.code} : {body[:200]}")
+        return jsonify({"success": False, "error": f"HTTP {e.code}", "detail": body}), e.code
+    except Exception as e:
+        logger.error(f"[agent_reply_proxy] Erreur : {e}", exc_info=True)
+        return jsonify({"success": False,
+                        "error": "user_app non accessible (port 5001)",
+                        "detail": str(e)}), 502
+
+
+# ════════════════════════════════════════════════════════════
 #  Utilitaires
 # ════════════════════════════════════════════════════════════
 

@@ -11,8 +11,16 @@ import threading
 import queue
 import numpy as np
 
-import sounddevice as sd
-import soundfile as sf
+# sounddevice et soundfile sont optionnels (non nécessaires pour l'API Flask)
+# Ils ne sont utilisés que pour l'enregistrement micro en ligne de commande.
+try:
+    import sounddevice as sd
+    import soundfile as sf
+    _AUDIO_AVAILABLE = True
+except ImportError:
+    sd = None
+    sf = None
+    _AUDIO_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
 
@@ -97,6 +105,9 @@ class STTModule:
         silence_frames_needed = int(silence_secs * frames_per_sec)
 
         self._audio_queue = queue.Queue()
+
+        if not _AUDIO_AVAILABLE:
+            raise RuntimeError("sounddevice/soundfile non installés — pip install sounddevice soundfile")
 
         with sd.InputStream(
             samplerate=sample_rate,
@@ -190,6 +201,8 @@ class STTModule:
     def transcribe_file(self, filepath: str) -> str:
         """Transcrit un fichier audio (wav/mp3/ogg)."""
         try:
+            if not _AUDIO_AVAILABLE:
+                raise RuntimeError("soundfile non installé — pip install soundfile")
             audio, sr = sf.read(filepath, dtype="float32")
             if len(audio.shape) > 1:
                 audio = audio.mean(axis=1)  # Stéréo → mono

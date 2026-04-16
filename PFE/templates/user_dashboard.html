@@ -541,10 +541,21 @@ body {
   color: #92400E;
   border: 1px solid #FDE68A;
   border-radius: 20px;
-  padding: 4px 12px;
-  font-size: 0.75rem;
+  padding: 6px 14px;
+  font-size: 0.77rem;
   font-weight: 600;
-  margin-top: 4px;
+  margin-top: 6px;
+  line-height: 1.4;
+}
+.transfer-badge.success {
+  background: #DCFCE7;
+  color: #15803D;
+  border-color: #86EFAC;
+}
+.transfer-badge.warning {
+  background: #FFF7ED;
+  color: #C2410C;
+  border-color: #FDBA74;
 }
 
 /* Indicateur typing */
@@ -1343,6 +1354,17 @@ body {
               <div class="bot-info-name">Assistant Virtuel TT</div>
               <div class="bot-status">
                 <span class="bot-status-dot"></span> En ligne
+                <!-- Indicateur Asterisk -->
+                <span id="asteriskBadge" title="Transfert agent humain (Asterisk)"
+                      style="margin-right:6px;font-size:0.75rem;padding:2px 8px;border-radius:20px;
+                             background:#e8f5e9;color:#2e7d32;border:1px solid #a5d6a7;display:none">
+                  <i class="fas fa-phone"></i> Appels actifs
+                </span>
+                <span id="asteriskBadgeOff" title="Asterisk non disponible — transferts sans appel"
+                      style="margin-right:6px;font-size:0.75rem;padding:2px 8px;border-radius:20px;
+                             background:#fff3e0;color:#e65100;border:1px solid #ffcc80;display:none">
+                  <i class="fas fa-phone-slash"></i> Appels inactifs
+                </span>
                 <span class="tts-playing-badge" id="ttsPlayingBadge">
                   <i class="fas fa-volume-up"></i> Lecture…
                 </span>
@@ -1608,6 +1630,31 @@ async function checkCapabilities() {
       serverSTT = !!( window.SpeechRecognition || window.webkitSpeechRecognition );
     }
   } catch(e) {}
+}
+
+/* ══════════════════════════════════════════════════
+   STATUT ASTERISK (appels téléphoniques)
+══════════════════════════════════════════════════ */
+// Variable globale : état Asterisk (mis à jour par checkAsteriskStatus)
+let asteriskActive = false;
+
+async function checkAsteriskStatus() {
+  try {
+    const res  = await fetch('/api/user/asterisk_status');
+    const data = await res.json();
+    const on   = document.getElementById('asteriskBadge');
+    const off  = document.getElementById('asteriskBadgeOff');
+    asteriskActive = !!data.available;
+    if (asteriskActive) {
+      on.style.display  = 'inline-flex';
+      off.style.display = 'none';
+    } else {
+      on.style.display  = 'none';
+      off.style.display = 'inline-flex';
+    }
+  } catch(e) {
+    asteriskActive = false;
+  }
 }
 
 /* ══════════════════════════════════════════════════
@@ -1891,7 +1938,12 @@ async function sendMessageText(text, isVoice = false) {
       appendMessage('bot', '❌ ' + data.error);
     } else {
       currentConvId = data.conversation_id;
-      appendMessage('bot', data.bot_response, data.transferred);
+      appendMessage('bot', data.bot_response, data.transferred, false, data.ami_called, data.asterisk_available, data.ami_reason);
+      // Mettre a jour l'etat Asterisk global avec la valeur fraiche du serveur
+      if (data.transferred) {
+        asteriskActive = !!data.asterisk_available;
+        checkAsteriskStatus(); // Rafraichir aussi le badge d'etat dans le header
+      }
 
       // Lecture TTS de la réponse bot
       if (data.bot_response) playTTS(data.bot_response);
@@ -1913,7 +1965,7 @@ async function sendMessageText(text, isVoice = false) {
   scrollToBottom();
 }
 
-function appendMessage(role, text, transferred = false, isVoice = false) {
+function appendMessage(role, text, transferred = false, isVoice = false, amiCalled = false, asteriskAvail = false, amiReason = '') {
   const container = document.getElementById('chatMessages');
 
   const row = document.createElement('div');
@@ -1941,11 +1993,29 @@ function appendMessage(role, text, transferred = false, isVoice = false) {
 
   bubbleWrap.appendChild(msgBubble);
 
-  /* ── Badge transfert ── */
+  /* ── Badge transfert (utilise les donnees fraiches du serveur) ── */
   if (transferred) {
     const badge = document.createElement('div');
     badge.className = 'transfer-badge';
-    badge.innerHTML = '<i class="fas fa-headset"></i> Transféré vers un agent humain';
+    // Utiliser asteriskAvail (frais, du serveur) avec fallback sur asteriskActive (global)
+    const astOk = asteriskAvail || asteriskActive;
+    if (amiCalled) {
+      // Appel Asterisk reellement initie → MicroSIP sonne chez l'agent
+      badge.className = 'transfer-badge success';
+      badge.innerHTML = '<i class="fas fa-phone-volume"></i> <strong>Agent humain contacté</strong> — Un appel est en cours vers votre numéro. Décrochez quand le téléphone sonne.';
+    } else if (amiReason === 'no_phone') {
+      // Asterisk actif mais numero client manquant dans le profil
+      badge.className = 'transfer-badge warning';
+      badge.innerHTML = '<i class="fas fa-phone-slash"></i> Transféré vers un agent humain — <strong>Numéro de téléphone manquant dans votre profil.</strong> Contactez le <strong>1298</strong>';
+    } else if (amiReason === 'ami_down' || (!astOk && !amiCalled)) {
+      // Asterisk non disponible → fallback numero hotline
+      badge.innerHTML = '<i class="fas fa-headset"></i> Transféré vers un agent humain — Contactez le <strong>1298</strong> pour un suivi';
+    } else if (amiReason === 'originate_failed') {
+      badge.className = 'transfer-badge warning';
+      badge.innerHTML = '<i class="fas fa-exclamation-triangle"></i> Transfert initié — Appel vers MicroSIP échoué. Contactez le <strong>1298</strong>';
+    } else {
+      badge.innerHTML = '<i class="fas fa-headset"></i> Transféré vers un agent humain — Contactez le <strong>1298</strong> pour un suivi';
+    }
     bubbleWrap.appendChild(badge);
   }
 
@@ -2200,6 +2270,9 @@ function showToast(msg, duration = 3500) {
 document.addEventListener('DOMContentLoaded', () => {
   loadStats();
   checkCapabilities();
+  checkAsteriskStatus();
+  // Revérifier le statut Asterisk toutes les 60 secondes
+  setInterval(checkAsteriskStatus, 15000);
 
   // Focus chat input quand on arrive sur la section chat
   document.querySelector('[data-section="chat"]').addEventListener('click', () => {
