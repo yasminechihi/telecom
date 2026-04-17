@@ -255,10 +255,29 @@ def _norm_intent_key(s: str) -> str:
 
 _INTENT_ACTION_NORM: dict = {_norm_intent_key(k): v for k, v in INTENT_TO_ACTION.items()}
 
+# Intents traités ENTIÈREMENT par le bot (RAG) — ne doivent JAMAIS déclencher un
+# transfert vers agent humain ni un appel MicroSIP.
+_NO_TRANSFER_INTENTS_NORM: frozenset = frozenset(
+    _norm_intent_key(k) for k in {
+        "استفسار عن التغطية",   # Couverture fibre → réponse informative directe
+        "استفسار عن التغطيه",
+    }
+)
+
+def _is_no_transfer_intent(intent: str) -> bool:
+    """True si cet intent ne doit jamais déclencher un transfert vers l'agent humain."""
+    return bool(intent and _norm_intent_key(intent.strip()) in _NO_TRANSFER_INTENTS_NORM)
+
 # Détecte toutes les formulations "donne-moi un numéro" dans les réponses du dataset :
 #   "اعطيني الرقم"  / "اعطيني رقم المطلب" / "اعطيني رقمك"
 #   "أعطيني رقم الخط" / "أعطيني رقم المطلب"  (avec hamza)
 _ASK_NUMBER_RE = re.compile(r'[اأ]عطيني\s*(الرقم|رقم)', re.UNICODE)
+
+# Détecte les demandes de numéro de RAPPEL dans les réponses du dataset :
+#   "خليلي رقمك" / "خلّيلي رقمك" / "خليني رقمك"   (استفسار عن التغطية)
+# Différent de _ASK_NUMBER_RE : ici le bot note le numéro pour rappeler le client,
+# pas pour déclencher un ticket de transfert vers agent humain.
+_CALLBACK_NUMBER_RE = re.compile(r'خلّ?[يا][لن]ي\s*رقمك', re.UNICODE)
 
 
 def _lookup_action(intent: str) -> str:
@@ -504,6 +523,7 @@ def _get_conv_state(conv_session_id: str) -> dict:
             "last_transferred_problem": "",   # problème qui a déclenché le dernier transfert
             "is_unknown_problem": False,      # True = hors dataset → TTS lit le message brut
             "session_learned_responses": [],  # réponses apprises dans cette session (éphémères)
+            "user_id": "",                    # stocké pour message_add dans api_internal_agent_reply
         }
     return user_conv_state[conv_session_id]
 
@@ -648,8 +668,37 @@ def process_user_message(conv_session_id: str, user_text: str) -> dict:
     # ── active_intent : intent du RECORD (fiable) ou NLU sinon ───
     active_intent = sess.get("pending_intent") or intent
 
-    # ── Numéro de demande demandé → transfert immédiat ────
+    # ── Numéro de rappel reçu (ex: استفسار عن التغطية) → clore la conversation ──
+    # Le bot avait demandé "خليلي رقمك" pour rappeler le client.
+    # L'user vient de donner son numéro → remercier et fermer, SANS aucun transfert.
+    if stage == "waiting_for_callback_number":
+        bot_resp = Config.THANKS_MESSAGE
+        sess["history"].append(("bot", bot_resp))
+        sess["stage"]          = "waiting_greeting"
+        sess["pending_intent"] = ""
+        sess["solution_given"] = True
+        return {"bot_response": bot_resp, "session_ended": True,
+                "transferred": False, "statut": "resolue"}
+
+    # ── Numéro de demande demandé ────────────────────────────
     if stage == "waiting_for_request_number":
+        # Vérifier d'abord si une réponse apprise existe pour ce problème.
+        # Si oui : le bot répond directement avec la solution mémorisée (pas de transfert).
+        # La clé de recherche = le problème ORIGINAL (pas le numéro que l'user vient d'envoyer).
+        _orig_prob_nr = (sess.get("original_problem") or
+                         sess.get("last_transferred_problem") or "").strip()
+        _learned_nr   = _find_session_learned(sess, _orig_prob_nr) if _orig_prob_nr else None
+        if _learned_nr:
+            bot_resp = _localize_response(_learned_nr, sess.get("collected_entities"))
+            sess["history"].append(("bot", bot_resp))
+            sess["stage"]          = "initial"
+            sess["pending_intent"] = ""
+            sess["solution_given"] = True
+            logger.info(f"[{conv_session_id}] Réponse apprise (waiting_for_request_number) — transfert évité")
+            return {"bot_response": bot_resp, "session_ended": False,
+                    "transferred": False, "statut": "resolue",
+                    "sujet": active_intent, "service_type": service_type}
+
         sess["transferred"]        = True
         sess["is_unknown_problem"] = False   # problème connu — intent identifié
         sess["last_transferred_problem"] = sess.get("original_problem") or user_text
@@ -671,17 +720,10 @@ def process_user_message(conv_session_id: str, user_text: str) -> dict:
 
     # ── ÉTAPE 1 : Poser une question de clarification ─────
     if stage == "initial":
-        # ── Apprentissage éphémère : vérifier si ce problème a déjà été
-        # résolu par un agent humain dans cette session ou dans la session courante ──
-        _learned_resp = _find_session_learned(sess, user_text)
-        if _learned_resp:
-            bot_resp = _localize_response(_learned_resp, sess.get("collected_entities"))
-            sess["history"].append(("bot", bot_resp))
-            sess["solution_given"] = True
-            logger.info(f"[{conv_session_id}] Réponse apprise (session learning) utilisée")
-            return {"bot_response": bot_resp, "session_ended": False,
-                    "transferred": False, "statut": "resolue",
-                    "sujet": active_intent, "service_type": service_type}
+        # NOTE : _find_session_learned() N'EST PLUS appelé ici.
+        # La réponse apprise est injectée aux points de transfert (waiting_for_request_number,
+        # rag_escalate, loop detection) pour que la conversation suive son flux normal
+        # (clarification → demande de numéro) avant de répondre avec la solution mémorisée.
 
         clari = response_eng.find_clarification_question(
             user_text, nlu_intent=intent, nlu_service=service_type
@@ -783,7 +825,29 @@ def process_user_message(conv_session_id: str, user_text: str) -> dict:
         if rag_conf < strict_threshold:
             rag_escalate = True
 
+    # Certains intents (ex: استفسار عن التغطية) sont résolus entièrement par le bot
+    # → bloquer ici le transfert même si le RAG a une confiance trop faible
     if rag_escalate:
+        _chk_no_tr = (sess.get("pending_intent") or active_intent or "").strip()
+        if _is_no_transfer_intent(_chk_no_tr):
+            rag_escalate = False
+
+    if rag_escalate:
+        # Réponse apprise ? → répondre directement, pas de transfert (Point 4)
+        _orig_prob_p4 = (sess.get("original_problem") or
+                         sess.get("last_transferred_problem") or user_text).strip()
+        _learned_p4   = _find_session_learned(sess, _orig_prob_p4)
+        if _learned_p4:
+            bot_resp = _localize_response(_learned_p4, sess.get("collected_entities"))
+            sess["history"].append(("bot", bot_resp))
+            sess["stage"]          = "initial"
+            sess["pending_intent"] = ""
+            sess["solution_given"] = True
+            logger.info(f"[{conv_session_id}] Réponse apprise (rag_escalate) — transfert évité")
+            return {"bot_response": bot_resp, "session_ended": False,
+                    "transferred": False, "statut": "resolue",
+                    "sujet": active_intent, "service_type": service_type}
+
         bot_resp = Config.TRANSFER_MESSAGE
         transfer.create_ticket(session_id=conv_session_id,
                                history=sess["history"],
@@ -818,7 +882,23 @@ def process_user_message(conv_session_id: str, user_text: str) -> dict:
     last_bot = next(
         (t for role, t in reversed(sess.get("history", [])) if role == "bot"), ""
     )
-    if last_bot and bot_resp.strip() == last_bot.strip():
+    _chk_loop = (sess.get("pending_intent") or active_intent or "").strip()
+    if last_bot and bot_resp.strip() == last_bot.strip() and not _is_no_transfer_intent(_chk_loop):
+        # Réponse apprise ? → répondre directement, pas de transfert (Point 5)
+        _orig_prob_p5 = (sess.get("original_problem") or
+                         sess.get("last_transferred_problem") or user_text).strip()
+        _learned_p5   = _find_session_learned(sess, _orig_prob_p5)
+        if _learned_p5:
+            bot_resp = _localize_response(_learned_p5, sess.get("collected_entities"))
+            sess["history"].append(("bot", bot_resp))
+            sess["stage"]          = "initial"
+            sess["pending_intent"] = ""
+            sess["solution_given"] = True
+            logger.info(f"[{conv_session_id}] Réponse apprise (loop detection) — transfert évité")
+            return {"bot_response": bot_resp, "session_ended": False,
+                    "transferred": False, "statut": "resolue",
+                    "sujet": active_intent, "service_type": service_type}
+
         sess["transferred"]        = True
         # Utiliser UNIQUEMENT pending_intent (jamais active_intent ni intent brut NLU)
         _p5 = (sess.get("pending_intent") or "").strip()
@@ -846,6 +926,11 @@ def process_user_message(conv_session_id: str, user_text: str) -> dict:
         # → attendre le numéro de l'utilisateur avant transfert
         # NE PAS effacer pending_intent : _build_tts_text() en a besoin
         sess["stage"] = "waiting_for_request_number"
+    elif _CALLBACK_NUMBER_RE.search(bot_resp):
+        # Le bot demande le numéro de rappel du client (ex: خليلي رقمك)
+        # → quand l'user répond avec son numéro, on dit juste au revoir (aucun transfert)
+        sess["stage"] = "waiting_for_callback_number"
+        # pending_intent conservé pour cohérence mais aucun appel ne sera déclenché
     else:
         sess["stage"]          = "initial"
         sess["pending_intent"] = ""
@@ -983,6 +1068,11 @@ def api_chat():
 
     # L'ID Firebase de la conversation est utilisé comme clé d'état bot
     session_id = conv_id_db
+
+    # Stamper le user_id dans la session dès le premier message (pour api_internal_agent_reply)
+    _state = _get_conv_state(session_id)
+    if not _state.get("user_id"):
+        _state["user_id"] = user_id
 
     # ── Sauvegarder le message utilisateur (NLU ajouté après traitement) ──
     # Le message est sauvegardé d'abord sans NLU, puis mis à jour après
@@ -1215,6 +1305,16 @@ def api_internal_agent_reply():
         # Même si la session n'est plus en mémoire, stocker dans le store global
         _session_learn_store({}, ticket_id or "unknown", response)
         learned = True
+
+    # Écrire la réponse de l'agent comme message bot dans le chat Firebase
+    # → le client voit la solution dans l'interface ; le bot a aussi appris
+    _uid = sess.get("user_id", "") if sess else ""
+    if sid and _uid:
+        try:
+            message_add(sid, _uid, "bot", response)
+            logger.info(f"[internal_agent_reply] Réponse agent écrite dans le chat ({sid[:8]}…)")
+        except Exception as _me:
+            logger.warning(f"[internal_agent_reply] Echec écriture message agent : {_me}")
 
     # Remettre la session en état initial
     if sess:

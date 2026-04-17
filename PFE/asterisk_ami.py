@@ -136,11 +136,12 @@ def _generate_problem_tts(problem_text: str, ticket_id: str) -> str:
     Génère un fichier audio TTS du texte du problème client et le place
     dans le répertoire sons d'Asterisk dans WSL.
 
-    Stratégie (sans dépendance à Windows ffmpeg) :
-      1. Générer le MP3 sur Windows (edge-tts ou gTTS)
-      2. Copier le MP3 vers /tmp dans WSL via _win_path_to_wsl
-      3. Convertir MP3→WAV 8kHz avec ffmpeg/sox/avconv dans WSL
-      4. Déplacer le WAV vers /usr/share/asterisk/sounds/custom/
+    Priorité moteurs TTS (identique à app.py / user_app.py) :
+      0. Coqui TTS  (open-source, arabe/darija) → génère WAV directement
+      1. edge-tts   (voix Microsoft ar-TN-ReemNeural) → génère MP3
+      2. gTTS       (fallback Google) → génère MP3
+
+    Conversion finale : WAV/MP3 Windows → copie WSL → ffmpeg/sox 8kHz → Asterisk
 
     Returns: nom du son Asterisk (ex: 'custom/tt_problem_abc123')
              ou '' en cas d'échec.
@@ -148,43 +149,82 @@ def _generate_problem_tts(problem_text: str, ticket_id: str) -> str:
     if not problem_text.strip():
         return ""
 
-    filename = f"tt_problem_{ticket_id}" if ticket_id else "tt_problem_tmp"
-    mp3_path = os.path.join(tempfile.gettempdir(), f"{filename}.mp3")
+    filename    = f"tt_problem_{ticket_id}" if ticket_id else "tt_problem_tmp"
+    mp3_path    = os.path.join(tempfile.gettempdir(), f"{filename}.mp3")
+    wav_direct  = ""   # WAV généré directement par Coqui (évite l'étape MP3→WAV)
+    wsl_wav_dst = f"{_WSL_SOUNDS_CUSTOM}/{filename}.wav"
 
-    # ── Étape 1 : Générer le TTS → MP3 (Windows Python) ─────────
+    # ── Lire les paramètres TTS depuis config.py (mêmes que app.py) ──
+    try:
+        from config import Config as _Cfg
+        _edge_voice = getattr(_Cfg, "EDGE_TTS_VOICE", "ar-TN-ReemNeural")
+    except Exception:
+        _edge_voice = "ar-TN-ReemNeural"
+
+    # ── Étape 1 : Générer le TTS audio (Windows Python) ─────────
 
     tts_ok = False
 
-    # Essai A : edge-tts module Python (voix arabe haute qualité)
+    # Essai 0 : Coqui TTS (open-source, arabe, même moteur que app.py / user_app.py)
     try:
-        import edge_tts, asyncio
+        from TTS.api import TTS as CoquiTTS
+        try:
+            from config import Config as _Cfg2
+            _c_custom  = getattr(_Cfg2, "COQUI_TTS_CUSTOM_MODEL",  "")
+            _c_cfg     = getattr(_Cfg2, "COQUI_TTS_CUSTOM_CONFIG", "")
+            _c_model   = getattr(_Cfg2, "COQUI_TTS_MODEL",  "tts_models/ar/css10/vits")
+            _c_speaker = getattr(_Cfg2, "COQUI_TTS_SPEAKER",  None)
+            _c_lang    = getattr(_Cfg2, "COQUI_TTS_LANGUAGE", None)
+        except Exception:
+            _c_custom, _c_cfg, _c_model = "", "", "tts_models/ar/css10/vits"
+            _c_speaker, _c_lang = None, None
 
-        async def _do_edge_tts():
-            communicate = edge_tts.Communicate(problem_text, "ar-SA-HamedNeural")
-            await communicate.save(mp3_path)
-
-        # Créer une nouvelle boucle dans un thread pour éviter les conflits Flask
-        import concurrent.futures
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
-            ex.submit(asyncio.run, _do_edge_tts()).result(timeout=25)
-
-        if os.path.exists(mp3_path) and os.path.getsize(mp3_path) > 500:
-            tts_ok = True
-            logger.info(f"[TTS] edge-tts (module) OK → {mp3_path}")
+        _ci = (CoquiTTS(model_path=_c_custom, config_path=_c_cfg or None)
+               if (_c_custom and os.path.isfile(_c_custom))
+               else CoquiTTS(_c_model))
+        _coqui_wav = os.path.join(tempfile.gettempdir(), f"{filename}_coqui.wav")
+        _ckw = {}
+        if _c_speaker: _ckw["speaker"]  = _c_speaker
+        if _c_lang:    _ckw["language"] = _c_lang
+        _ci.tts_to_file(text=problem_text, file_path=_coqui_wav, **_ckw)
+        if os.path.exists(_coqui_wav) and os.path.getsize(_coqui_wav) > 500:
+            wav_direct = _coqui_wav
+            tts_ok     = True
+            logger.info(f"[TTS] Coqui TTS OK → {_coqui_wav}")
     except Exception as e:
-        logger.warning(f"[TTS] edge-tts module échoué : {e}")
+        logger.info(f"[TTS] Coqui TTS non disponible : {e}")
+
+    # Essai A : edge-tts module Python (voix ar-TN-ReemNeural — même que app.py)
+    if not tts_ok:
+        try:
+            import edge_tts, asyncio
+
+            async def _do_edge_tts():
+                communicate = edge_tts.Communicate(problem_text, _edge_voice)
+                await communicate.save(mp3_path)
+
+            # Créer une nouvelle boucle dans un thread pour éviter les conflits Flask
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+                ex.submit(asyncio.run, _do_edge_tts()).result(timeout=25)
+
+            if os.path.exists(mp3_path) and os.path.getsize(mp3_path) > 500:
+                tts_ok = True
+                logger.info(f"[TTS] edge-tts (module) OK → {mp3_path} [voix={_edge_voice}]")
+        except Exception as e:
+            logger.warning(f"[TTS] edge-tts module échoué : {e}")
 
     # Essai B : edge-tts en ligne de commande
     if not tts_ok:
         try:
             r = subprocess.run(
-                ["edge-tts", "--voice", "ar-SA-HamedNeural",
+                ["edge-tts", "--voice", _edge_voice,
                  "--text", problem_text, "--write-media", mp3_path],
                 capture_output=True, timeout=25
             )
             if r.returncode == 0 and os.path.exists(mp3_path) and os.path.getsize(mp3_path) > 500:
                 tts_ok = True
-                logger.info(f"[TTS] edge-tts CLI OK → {mp3_path}")
+                logger.info(f"[TTS] edge-tts CLI OK → {mp3_path} [voix={_edge_voice}]")
         except Exception as e:
             logger.warning(f"[TTS] edge-tts CLI échoué : {e}")
 
@@ -203,79 +243,92 @@ def _generate_problem_tts(problem_text: str, ticket_id: str) -> str:
         logger.error("[TTS] Tous les moteurs TTS ont échoué")
         return ""
 
-    # ── Étape 2 : Copier le MP3 vers WSL /tmp ────────────────────
-    wsl_mp3 = _win_path_to_wsl(mp3_path)
-    wsl_mp3_tmp = f"/tmp/{filename}.mp3"
-    wsl_wav_dst = f"{_WSL_SOUNDS_CUSTOM}/{filename}.wav"
-
-    # S'assurer que le répertoire de destination existe
+    # ── Étapes 2+3 : Copier vers WSL et convertir en WAV 8kHz pour Asterisk ──
     _wsl_sh(f"mkdir -p {_WSL_SOUNDS_CUSTOM}", timeout=5)
-
-    ok_cp, _, err_cp = _wsl_sh(
-        f"cp '{wsl_mp3}' '{wsl_mp3_tmp}'", timeout=10
-    )
-    if not ok_cp:
-        logger.error(f"[TTS] Copie MP3 vers WSL échouée : {err_cp}")
-        return ""
-
-    # ── Étape 3 : Convertir MP3 → WAV 8kHz dans WSL ─────────────
-    # Essayer ffmpeg, sox, avconv dans l'ordre
+    _wsl_sh(f"mkdir -p {_WSL_MONITOR_DIR}",   timeout=5)
     conv_ok = False
 
-    # Essai ffmpeg (installé par défaut dans Ubuntu WSL)
-    ok_ff, _, err_ff = _wsl_sh(
-        f"ffmpeg -y -i '{wsl_mp3_tmp}' "
-        f"-ar 8000 -ac 1 -acodec pcm_s16le '{wsl_wav_dst}' 2>/dev/null",
-        timeout=30
-    )
-    if ok_ff:
-        # Vérifier que le fichier WAV a été créé et n'est pas vide
-        ok_test, out_test, _ = _wsl_sh(
-            f"test -s '{wsl_wav_dst}' && echo ok", timeout=5
-        )
-        if ok_test and "ok" in out_test:
-            conv_ok = True
-            logger.info(f"[TTS] Conversion ffmpeg (WSL) OK → {wsl_wav_dst}")
-    if not conv_ok:
-        logger.warning(f"[TTS] ffmpeg WSL : {err_ff[:80]}")
-
-    # Essai sox (alternative légère)
-    if not conv_ok:
-        ok_sox, _, err_sox = _wsl_sh(
-            f"sox '{wsl_mp3_tmp}' -r 8000 -c 1 -b 16 '{wsl_wav_dst}' 2>/dev/null",
-            timeout=30
-        )
-        if ok_sox:
-            ok_test, out_test, _ = _wsl_sh(
-                f"test -s '{wsl_wav_dst}' && echo ok", timeout=5
+    if wav_direct:
+        # ── Chemin Coqui : WAV Windows → WSL → 8kHz (pas de MP3 intermédiaire) ──
+        wsl_wav_src = _win_path_to_wsl(wav_direct)
+        wsl_wav_tmp = f"/tmp/{filename}_src.wav"
+        ok_cpw, _, err_cpw = _wsl_sh(f"cp '{wsl_wav_src}' '{wsl_wav_tmp}'", timeout=10)
+        if ok_cpw:
+            ok_ff, _, _ = _wsl_sh(
+                f"ffmpeg -y -i '{wsl_wav_tmp}' "
+                f"-ar 8000 -ac 1 -acodec pcm_s16le '{wsl_wav_dst}' 2>/dev/null",
+                timeout=30
             )
-            if ok_test and "ok" in out_test:
+            ok_tst, out_tst, _ = _wsl_sh(f"test -s '{wsl_wav_dst}' && echo ok", timeout=5)
+            if ok_ff and ok_tst and "ok" in out_tst:
                 conv_ok = True
-                logger.info(f"[TTS] Conversion sox (WSL) OK → {wsl_wav_dst}")
-        if not conv_ok:
-            logger.warning(f"[TTS] sox WSL : {err_sox[:80]}")
+                logger.info(f"[TTS] Coqui WAV → Asterisk 8kHz OK → {wsl_wav_dst}")
+            _wsl_sh(f"rm -f '{wsl_wav_tmp}'", timeout=5)
+        else:
+            logger.warning(f"[TTS] Copie WAV Coqui → WSL échouée : {err_cpw}")
+        try:
+            os.remove(wav_direct)
+        except Exception:
+            pass
 
-    # Essai avconv (alias ffmpeg sur certains systèmes)
     if not conv_ok:
-        ok_av, _, _ = _wsl_sh(
-            f"avconv -y -i '{wsl_mp3_tmp}' "
+        # ── Chemin MP3 : copier MP3 vers WSL puis convertir ──
+        wsl_mp3     = _win_path_to_wsl(mp3_path)
+        wsl_mp3_tmp = f"/tmp/{filename}.mp3"
+
+        ok_cp, _, err_cp = _wsl_sh(f"cp '{wsl_mp3}' '{wsl_mp3_tmp}'", timeout=10)
+        if not ok_cp:
+            logger.error(f"[TTS] Copie MP3 vers WSL échouée : {err_cp}")
+            return ""
+
+        # ── Convertir MP3 → WAV 8kHz dans WSL (ffmpeg / sox / avconv) ──
+        # Essai ffmpeg (installé par défaut dans Ubuntu WSL)
+        ok_ff, _, err_ff = _wsl_sh(
+            f"ffmpeg -y -i '{wsl_mp3_tmp}' "
             f"-ar 8000 -ac 1 -acodec pcm_s16le '{wsl_wav_dst}' 2>/dev/null",
             timeout=30
         )
-        if ok_av:
-            ok_test, out_test, _ = _wsl_sh(
-                f"test -s '{wsl_wav_dst}' && echo ok", timeout=5
-            )
+        if ok_ff:
+            ok_test, out_test, _ = _wsl_sh(f"test -s '{wsl_wav_dst}' && echo ok", timeout=5)
             if ok_test and "ok" in out_test:
                 conv_ok = True
-                logger.info(f"[TTS] Conversion avconv (WSL) OK → {wsl_wav_dst}")
+                logger.info(f"[TTS] Conversion ffmpeg (WSL) OK → {wsl_wav_dst}")
+        if not conv_ok:
+            logger.warning(f"[TTS] ffmpeg WSL : {err_ff[:80]}")
 
-    # Nettoyage du MP3 temporaire dans WSL et Windows
-    _wsl_sh(f"rm -f '{wsl_mp3_tmp}'", timeout=5)
-    try:
-        os.remove(mp3_path)
-    except Exception:
-        pass
+        # Essai sox (alternative légère)
+        if not conv_ok:
+            ok_sox, _, err_sox = _wsl_sh(
+                f"sox '{wsl_mp3_tmp}' -r 8000 -c 1 -b 16 '{wsl_wav_dst}' 2>/dev/null",
+                timeout=30
+            )
+            if ok_sox:
+                ok_test, out_test, _ = _wsl_sh(f"test -s '{wsl_wav_dst}' && echo ok", timeout=5)
+                if ok_test and "ok" in out_test:
+                    conv_ok = True
+                    logger.info(f"[TTS] Conversion sox (WSL) OK → {wsl_wav_dst}")
+            if not conv_ok:
+                logger.warning(f"[TTS] sox WSL : {err_sox[:80]}")
+
+        # Essai avconv (alias ffmpeg sur certains systèmes)
+        if not conv_ok:
+            ok_av, _, _ = _wsl_sh(
+                f"avconv -y -i '{wsl_mp3_tmp}' "
+                f"-ar 8000 -ac 1 -acodec pcm_s16le '{wsl_wav_dst}' 2>/dev/null",
+                timeout=30
+            )
+            if ok_av:
+                ok_test, out_test, _ = _wsl_sh(f"test -s '{wsl_wav_dst}' && echo ok", timeout=5)
+                if ok_test and "ok" in out_test:
+                    conv_ok = True
+                    logger.info(f"[TTS] Conversion avconv (WSL) OK → {wsl_wav_dst}")
+
+        # Nettoyage du MP3 temporaire dans WSL et Windows
+        _wsl_sh(f"rm -f '{wsl_mp3_tmp}'", timeout=5)
+        try:
+            os.remove(mp3_path)
+        except Exception:
+            pass
 
     if not conv_ok:
         logger.error(
@@ -308,16 +361,22 @@ def _convert_to_asterisk_wav(src_path: str, dst_path: str) -> bool:
 # ════════════════════════════════════════════════════════════
 
 def _get_whisper_model():
-    """Charge le modèle Whisper une seule fois (lazy loading, thread-safe)."""
+    """Charge le modèle Whisper une seule fois (lazy loading, thread-safe).
+    Utilise les mêmes paramètres que app.py / user_app.py (config.py)."""
     global _whisper_model
     with _whisper_lock:
         if _whisper_model is None:
             try:
                 from faster_whisper import WhisperModel
-                _whisper_model = WhisperModel(
-                    "small", device="cpu", compute_type="int8"
-                )
-                logger.info("[STT] faster_whisper 'small' chargé")
+                # Lire STT_MODEL / STT_DEVICE depuis config.py (mêmes réglages que app.py)
+                try:
+                    from config import Config as _Cfg
+                    _stt_model  = getattr(_Cfg, "STT_MODEL",  "medium")
+                    _stt_device = getattr(_Cfg, "STT_DEVICE", "cpu")
+                except Exception:
+                    _stt_model, _stt_device = "medium", "cpu"
+                _whisper_model = WhisperModel(_stt_model, device=_stt_device, compute_type="int8")
+                logger.info(f"[STT] faster_whisper '{_stt_model}' chargé")
             except Exception as e:
                 logger.warning(f"[STT] faster_whisper non disponible : {e}")
                 _whisper_model = None
@@ -326,43 +385,83 @@ def _get_whisper_model():
 
 def _transcribe_wav(win_wav_path: str) -> str:
     """
-    Transcrit un fichier WAV avec Whisper (arabe).
+    Transcrit un fichier WAV avec Whisper (arabe dialectal tunisien).
     Returns: texte transcrit ou ''.
     """
+    # Prompt d'amorçage étendu : phrases réelles d'agents télécom tunisiens
+    # → guide Whisper vers la darija tunisienne et réduit les hallucinations
+    _PROMPT = (
+        "وكالة خدمة عملاء تونس تيليكوم. المحادثة بالدارجة التونسية. "
+        "عبارات شائعة للعون: توا نحلولك المشكلة. اتو نرجعهولك توا. "
+        "روح فحصلوا توا. صبر شوية باش نشوف. الخط يخدم توا؟ "
+        "سامحنا على التأخير. نعم، الانترنت يرجع توا. الفاتورة مدفوعة. "
+        "نبعثلك رسالة. الرقم مفعّل. خط مسدود، باش نفتحهولك. "
+        "اعمل restart للروتر. المشكلة في الشبكة، نحلوها قريباً."
+    )
+
     # Essai 1 : faster_whisper (installé dans l'env Flask)
     model = _get_whisper_model()
     if model is not None:
         try:
-            segments, _ = model.transcribe(win_wav_path, language="ar")
+            segments, _ = model.transcribe(
+                win_wav_path,
+                language="ar",
+                beam_size=5,
+                initial_prompt=_PROMPT,
+                vad_filter=True,                  # supprime silences/bruit → moins d'hallucinations
+                temperature=0,                    # déterministe, zéro variation aléatoire
+                condition_on_previous_text=False, # évite les boucles de répétition hallucinées
+                word_timestamps=False,
+            )
             text = " ".join(s.text.strip() for s in segments).strip()
             logger.info(f"[STT] Transcription faster_whisper : '{text[:80]}'")
             return text
         except Exception as e:
             logger.warning(f"[STT] faster_whisper transcription échouée : {e}")
 
-    # Essai 2 : openai-whisper
+    # Essai 2 : openai-whisper (même modèle que config.py)
     try:
         import whisper
-        m = whisper.load_model("small")
-        result = m.transcribe(win_wav_path, language="ar")
+        try:
+            from config import Config as _CfgW
+            _ow_model = getattr(_CfgW, "STT_MODEL", "medium")
+        except Exception:
+            _ow_model = "medium"
+        m = whisper.load_model(_ow_model)
+        result = m.transcribe(
+            win_wav_path,
+            language="ar",
+            beam_size=5,
+            initial_prompt=_PROMPT,
+            temperature=0,
+            condition_on_previous_text=False,
+        )
         text = result.get("text", "").strip()
-        logger.info(f"[STT] Transcription openai-whisper : '{text[:80]}'")
+        logger.info(f"[STT] Transcription openai-whisper '{_ow_model}' : '{text[:80]}'")
         return text
     except Exception as e:
         logger.warning(f"[STT] openai-whisper échoué : {e}")
 
-    # Essai 3 : whisper via WSL Python
+    # Essai 3 : whisper via WSL Python (même modèle que config.py)
     try:
+        try:
+            from config import Config as _CfgW2
+            _wsl_model = getattr(_CfgW2, "STT_MODEL", "medium")
+        except Exception:
+            _wsl_model = "medium"
+        _wsl_prompt = _PROMPT.replace("'", " ").replace('"', " ")
         wsl_wav_path = _win_path_to_wsl(win_wav_path)
         ok, stdout, _ = _wsl_sh(
             f"python3 -c \""
-            f"import whisper; m=whisper.load_model('small'); "
-            f"r=m.transcribe('{wsl_wav_path}', language='ar'); "
+            f"import whisper; m=whisper.load_model('{_wsl_model}'); "
+            f"r=m.transcribe('{wsl_wav_path}', language='ar', beam_size=5, "
+            f"initial_prompt='{_wsl_prompt}', temperature=0, "
+            f"condition_on_previous_text=False); "
             f"print(r['text'].strip())\"",
-            timeout=90
+            timeout=180
         )
         if ok and stdout:
-            logger.info(f"[STT] Transcription WSL whisper : '{stdout[:80]}'")
+            logger.info(f"[STT] Transcription WSL whisper '{_wsl_model}' : '{stdout[:80]}'")
             return stdout.strip()
     except Exception as e:
         logger.warning(f"[STT] WSL whisper échoué : {e}")
@@ -430,19 +529,68 @@ def _watch_and_transcribe(ticket_id: str, session_id: str,
 
         logger.info(f"[STT] Enregistrement détecté : {wsl_rec_path}")
 
-        # Copier le fichier de WSL vers Windows (pour que Whisper y accède)
-        ok2, _, err2 = _wsl_sh(
-            f"cp '{wsl_rec_path}' '{wsl_tmp}'", timeout=10
+        # ── Rééchantillonner 8kHz → 16kHz pour Whisper ───────────────
+        # Asterisk enregistre à la fréquence du codec SIP (8kHz pour g711).
+        # Whisper est optimisé pour 16kHz → la conversion améliore drastiquement
+        # la précision de transcription, surtout pour l'arabe dialectal tunisien.
+        wsl_16k_path = f"/tmp/agent_reply_{ticket_id}_16k.wav"
+        # ── Filtres audio pour améliorer la qualité de la voix de l'agent ──
+        # highpass=f=80   : supprime les basses fréquences parasites (clics, bruit de fond)
+        # lowpass=f=7500  : coupe les hautes fréquences inutiles (sifflement codec)
+        # volume=3.0      : amplifie la voix (enregistrement SIP souvent trop bas)
+        # acompressor     : compresse la dynamique pour uniformiser le niveau
+        _af_filters = (
+            "highpass=f=80,"
+            "lowpass=f=7500,"
+            "volume=3.0,"
+            "acompressor=threshold=-25dB:ratio=4:attack=5:release=50"
         )
+        ok_rs, _, err_rs = _wsl_sh(
+            f"ffmpeg -y -i '{wsl_rec_path}' "
+            f"-af \"{_af_filters}\" "
+            f"-ar 16000 -ac 1 -acodec pcm_s16le '{wsl_16k_path}' 2>/dev/null",
+            timeout=30
+        )
+        # Vérifier que le fichier 16kHz est valide
+        ok_rs_chk, out_rs_chk, _ = _wsl_sh(
+            f"test -s '{wsl_16k_path}' && echo ok", timeout=5
+        )
+        src_for_copy = wsl_16k_path if (ok_rs and ok_rs_chk and "ok" in out_rs_chk) \
+                       else wsl_rec_path
+        if src_for_copy == wsl_16k_path:
+            logger.info("[STT] Preprocessing audio (filtres voix + 16kHz) OK → meilleure précision")
+        else:
+            logger.warning(f"[STT] Preprocessing échoué ({err_rs[:60]}) → utilise l'original 8kHz")
+
+        # ── Copier le fichier (16kHz ou 8kHz fallback) vers Windows ──
+        ok2, _, err2 = _wsl_sh(f"cp '{src_for_copy}' '{wsl_tmp}'", timeout=10)
+        # Nettoyage du fichier 16kHz dans WSL
+        if src_for_copy == wsl_16k_path:
+            _wsl_sh(f"rm -f '{wsl_16k_path}'", timeout=5)
+
+        # Lire le modèle STT depuis config.py pour les fallbacks WSL
+        try:
+            from config import Config as _CfgSTT
+            _fb_model = getattr(_CfgSTT, "STT_MODEL", "medium")
+        except Exception:
+            _fb_model = "medium"
+
         if not ok2:
             logger.warning(f"[STT] Copie WSL → Windows échouée : {err2}")
-            # Essayer de transcrire directement via WSL
+            # Fallback : transcrire directement depuis WSL avec le bon modèle + prompt darija
+            _fb_prompt = (
+                "وكالة خدمة عملاء تونس تيليكوم. المحادثة بالدارجة التونسية. "
+                "عبارات شائعة: توا نحلولك المشكلة. اتو نرجعهولك توا. "
+                "روح فحصلوا توا. صبر شوية. الخط يخدم توا. الانترنت يرجع."
+            ).replace("'", " ").replace('"', " ")
             transcript = ""
             ok3, out3, _ = _wsl_sh(
-                f"python3 -c \"import whisper; m=whisper.load_model('small'); "
-                f"r=m.transcribe('{wsl_rec_path}', language='ar'); "
+                f"python3 -c \"import whisper; m=whisper.load_model('{_fb_model}'); "
+                f"r=m.transcribe('{src_for_copy}', language='ar', beam_size=5, "
+                f"initial_prompt='{_fb_prompt}', temperature=0, "
+                f"condition_on_previous_text=False); "
                 f"print(r['text'].strip())\"",
-                timeout=120
+                timeout=180
             )
             if ok3 and out3:
                 transcript = out3.strip()
