@@ -7,6 +7,13 @@ import os
 # ── Chemins ──────────────────────────────────────────────────
 BASE_DIR        = os.path.dirname(os.path.abspath(__file__))
 DATASET_PATH    = os.path.join(BASE_DIR, "dataset_final_nlp_v2_corrected.jsonl")
+
+# ── Source du dataset ─────────────────────────────────────────
+# True  → charge depuis Firebase Firestore (collection "dataset_nlp")
+#          avec fallback automatique vers le fichier JSONL si Firebase
+#          est indisponible.
+# False → charge uniquement depuis le fichier JSONL local.
+USE_FIREBASE_DATASET = True
 MODELS_DIR      = os.path.join(BASE_DIR, "models")
 LOGS_DIR        = os.path.join(BASE_DIR, "logs")
 DATA_DIR        = os.path.join(BASE_DIR, "data")

@@ -425,3 +425,96 @@ def conversations_get_all_recent(limit: int = 30) -> list:
         })
 
     return result
+
+
+# ════════════════════════════════════════════════════════════
+#  DATASET NLP — collection "dataset_nlp"
+#
+#  Chaque document conserve exactement les mêmes champs que
+#  le fichier JSONL original :
+#    client_name, location_wilaya, location_delegation,
+#    issue_type, service_type, suggested_action,
+#    sentiment_label, instruction, response
+#  + un champ _idx (int) pour préserver l'ordre d'insertion.
+# ════════════════════════════════════════════════════════════
+
+_DATASET_COLLECTION = "dataset_nlp"
+
+
+def dataset_load_all() -> list:
+    """
+    Charge tous les enregistrements du dataset depuis Firestore.
+    Retourne une liste de dicts (même structure que le JSONL).
+    Lève une exception si Firebase est indisponible.
+    """
+    db = get_db()
+    docs = (db.collection(_DATASET_COLLECTION)
+              .order_by("_idx")
+              .stream())
+    records = []
+    for doc in docs:
+        d = doc.to_dict()
+        d["_firebase_id"] = doc.id   # conserve l'ID Firestore pour édition/suppression
+        records.append(d)
+    return records
+
+
+def dataset_count() -> int:
+    """Retourne le nombre de documents dans la collection dataset_nlp."""
+    db = get_db()
+    try:
+        from google.cloud.firestore_v1.base_query import BaseQuery  # noqa
+        agg = db.collection(_DATASET_COLLECTION).count()
+        result = agg.get()
+        return result[0][0].value
+    except Exception:
+        return sum(1 for _ in db.collection(_DATASET_COLLECTION).stream())
+
+
+def dataset_add(record: dict) -> str:
+    """
+    Ajoute un enregistrement au dataset Firebase.
+    Retourne l'ID Firestore du document créé.
+    """
+    db = get_db()
+    try:
+        n = dataset_count()
+    except Exception:
+        n = 0
+    doc_ref = db.collection(_DATASET_COLLECTION).document()
+    data = {k: v for k, v in record.items() if not k.startswith("_")}
+    data["_idx"] = n
+    data["_added_at"] = _now()
+    doc_ref.set(data)
+    logger.info(f"[dataset] Enregistrement ajouté : {doc_ref.id}")
+    return doc_ref.id
+
+
+def dataset_delete(firebase_id: str) -> bool:
+    """Supprime un enregistrement du dataset par son ID Firestore."""
+    db = get_db()
+    try:
+        db.collection(_DATASET_COLLECTION).document(firebase_id).delete()
+        logger.info(f"[dataset] Enregistrement supprimé : {firebase_id}")
+        return True
+    except Exception as e:
+        logger.warning(f"[dataset] Erreur suppression {firebase_id} : {e}")
+        return False
+
+
+def dataset_get_page(page: int = 0, page_size: int = 50) -> list:
+    """
+    Retourne une page de `page_size` enregistrements (pour l'interface backoffice).
+    page=0 → les premiers enregistrements.
+    """
+    db = get_db()
+    query = (db.collection(_DATASET_COLLECTION)
+               .order_by("_idx")
+               .offset(page * page_size)
+               .limit(page_size))
+    records = []
+    for doc in query.stream():
+        d = doc.to_dict()
+        d["_firebase_id"] = doc.id
+        records.append(d)
+    return records

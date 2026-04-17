@@ -193,48 +193,92 @@ class ResponseEngine:
     # ─────────────────────────────────────────────────────────
     # Chargement et PARSING du dataset
     # ─────────────────────────────────────────────────────────
+    def _parse_record(self, rec: dict) -> dict | None:
+        """Parse un enregistrement brut (JSONL ou Firebase) en record structuré."""
+        if not rec.get("instruction") or not rec.get("response"):
+            return None
+        turns = self._parse_turns(rec["instruction"])
+        rec["user_greeting"] = turns.get("user_1", "")
+        rec["user_problem"]  = turns.get("user_2", "")
+        rec["bot_question"]  = turns.get("bot_2", "")
+        rec["user_answer"]   = turns.get("user_3", "")
+        return rec
+
     def _load_dataset(self) -> list:
         """
-        Charge le dataset JSONL et parse chaque conversation en tours structurés.
+        Charge le dataset et parse chaque conversation en tours structurés.
 
-        Pour chaque record, extrait :
-          - user_greeting:   "عسلامة"
-          - user_problem:    Le problème décrit par le client
-          - bot_question:    La question de clarification du bot
-          - user_answer:     La réponse du client à la clarification
-          - response:        La réponse finale du bot
+        Ordre de priorité :
+          1. Firebase Firestore (collection dataset_nlp) — si USE_FIREBASE_DATASET=True
+             et que la connexion est disponible.
+          2. Fichier JSONL local (DATASET_PATH) — fallback automatique si Firebase
+             est indisponible ou désactivé.
+          Dans tous les cas, learned_interactions.jsonl est ajouté en complément.
         """
         records = []
-        paths   = [self.config.DATASET_PATH]
 
+        # ── Essai 1 : Firebase Firestore ──────────────────────────────────────
+        _use_fb = getattr(self.config, "USE_FIREBASE_DATASET", True)
+        if _use_fb:
+            try:
+                import sys
+                sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+                from firebase_config import dataset_load_all
+                raw_records = dataset_load_all()
+                if raw_records:
+                    for rec in raw_records:
+                        parsed = self._parse_record(rec)
+                        if parsed:
+                            records.append(parsed)
+                    logger.info(f"Dataset chargé depuis Firebase : {len(records)} conversations.")
+            except Exception as _fb_err:
+                logger.warning(
+                    f"Firebase dataset indisponible ({_fb_err}) "
+                    "→ fallback fichier JSONL local."
+                )
+                records = []   # reset pour que le fallback JSONL prenne le relais
+
+        # ── Fallback (ou complément) : fichier JSONL local ────────────────────
+        if not records:
+            paths = [self.config.DATASET_PATH]
+            for path in paths:
+                if not os.path.exists(path):
+                    continue
+                with open(path, "r", encoding="utf-8") as f:
+                    for line in f:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            rec    = json.loads(line)
+                            parsed = self._parse_record(rec)
+                            if parsed:
+                                records.append(parsed)
+                        except json.JSONDecodeError:
+                            continue
+            if records:
+                logger.info(f"Dataset chargé depuis JSONL local : {len(records)} conversations.")
+
+        # ── Complément : learned_interactions.jsonl (toujours ajouté) ─────────
         if os.path.exists(self.config.LEARNED_DATA_PATH):
-            paths.append(self.config.LEARNED_DATA_PATH)
-
-        for path in paths:
-            if not os.path.exists(path):
-                continue
-            with open(path, "r", encoding="utf-8") as f:
+            extra = 0
+            with open(self.config.LEARNED_DATA_PATH, "r", encoding="utf-8") as f:
                 for line in f:
                     line = line.strip()
                     if not line:
                         continue
                     try:
-                        rec = json.loads(line)
-                        if not rec.get("instruction") or not rec.get("response"):
-                            continue
-
-                        # Parser les tours de dialogue
-                        turns = self._parse_turns(rec["instruction"])
-                        rec["user_greeting"]  = turns.get("user_1", "")
-                        rec["user_problem"]   = turns.get("user_2", "")
-                        rec["bot_question"]   = turns.get("bot_2", "")
-                        rec["user_answer"]    = turns.get("user_3", "")
-
-                        records.append(rec)
+                        rec    = json.loads(line)
+                        parsed = self._parse_record(rec)
+                        if parsed:
+                            records.append(parsed)
+                            extra += 1
                     except json.JSONDecodeError:
                         continue
+            if extra:
+                logger.info(f"  + {extra} interactions apprises ajoutées.")
 
-        logger.info(f"Dataset chargé et parsé : {len(records)} conversations.")
+        logger.info(f"Dataset total parsé : {len(records)} conversations.")
         return records
 
     def _parse_turns(self, instruction: str) -> dict:
