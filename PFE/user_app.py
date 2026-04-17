@@ -207,6 +207,112 @@ def _auto_start_asterisk():
     t.start()
 
 # ══════════════════════════════════════════════════════════
+#  MAPPING INTENT → SUGGESTED_ACTION (14 types du dataset)
+#  Clés = intents retournés par NLU (INTENT_PATTERNS dans nlu.py)
+#  Valeurs = suggested_action correspondant dans le dataset
+#
+#  Utilisé lors du transfert agent :
+#    - Si le problème est connu  → TTS dit l'action suggérée + numéro/texte du dernier message
+#    - Si le problème est inconnu → TTS lit directement le message client en arabe
+# ══════════════════════════════════════════════════════════
+
+INTENT_TO_ACTION: dict = {
+    # ── Graphie dataset (sortie modèle ML, avec ة) ──────────
+    "عطل في الشبكة":            "تثبت من حالة الشبكة",
+    "بطء في الانترنات":          "اختبار سرعة التدفق",
+    "انقطاع الانترنات":          "تشخيص تقني",
+    "مشكلة في إشارة الويفي":    "تقديم نصيحة تقنية",
+    "مشكلة في الدفع":            "إعادة تفعيل الخط",
+    "اعتراض على الفاتورة":       "استخراج تفاصيل الفاتورة",
+    "استفسار عن الرصيد":         "تقديم كود USSD",
+    "استفسار عن العروض":         "تقديم معلومات عن العروض",
+    "مشكلة في التجوال":          "تثبت من حالة التجوال",
+    "تأخير في التركيب":          "متابعة حالة الطلب",
+    "تبديل شريحة":               "مد الحريف بموقع فرع",
+    "تغيير الخدمة":              "تحويل نوع الخدمة",
+    "عطب في الجهاز":             "تبديل المودم",
+    "استفسار عن التغطية":        "تثبت من تغطية الفيبر",
+    # ── Graphie INTENT_PATTERNS NLU (fallback regex, avec ه) ─
+    "عطل في الشبكه":             "تثبت من حالة الشبكة",
+    "بطء في الانترنت":           "اختبار سرعة التدفق",
+    "انقطاع الانترنت":           "تشخيص تقني",
+    "مشكله في اشاره الويفي":     "تقديم نصيحة تقنية",
+    "مشكله في الدفع":            "إعادة تفعيل الخط",
+    "اعتراض على الفاتوره":       "استخراج تفاصيل الفاتورة",
+    "مشكله في الجوال":           "تثبت من حالة التجوال",
+    "تاخير في التركيب":          "متابعة حالة الطلب",
+    "تبديل شريحه":               "مد الحريف بموقع فرع",
+    "تغيير الخدمه":              "تحويل نوع الخدمة",
+    "استفسار عن التغطيه":        "تثبت من تغطية الفيبر",
+}
+
+# Table normalisée (ة→ه, أإآ→ا) pour lookup tolérant aux variantes orthographiques
+def _norm_intent_key(s: str) -> str:
+    s = re.sub(r'\s+', ' ', s).strip()
+    s = s.replace('ة', 'ه').replace('ت', 'ت')   # ة → ه
+    s = s.replace('أ', 'ا').replace('إ', 'ا').replace('آ', 'ا')  # alef variants
+    return s
+
+_INTENT_ACTION_NORM: dict = {_norm_intent_key(k): v for k, v in INTENT_TO_ACTION.items()}
+
+# Détecte toutes les formulations "donne-moi un numéro" dans les réponses du dataset :
+#   "اعطيني الرقم"  / "اعطيني رقم المطلب" / "اعطيني رقمك"
+#   "أعطيني رقم الخط" / "أعطيني رقم المطلب"  (avec hamza)
+_ASK_NUMBER_RE = re.compile(r'[اأ]عطيني\s*(الرقم|رقم)', re.UNICODE)
+
+
+def _lookup_action(intent: str) -> str:
+    """Cherche l'action pour un intent, d'abord exact puis normalisé."""
+    action = INTENT_TO_ACTION.get(intent, "")
+    if not action:
+        action = _INTENT_ACTION_NORM.get(_norm_intent_key(intent), "")
+    return action
+
+
+def _build_tts_text(sess: dict) -> str:
+    """
+    Construit le texte qui sera lu par TTS à l'agent lors du transfert.
+
+    Règle basée sur le flag is_unknown_problem (positionné aux 5 points de transfert) :
+
+      • is_unknown_problem = False  → Problème CONNU (dans les 14 types du dataset)
+            TTS = suggested_action  +  dernier message du client
+            Ex : "تثبت من حالة الشبكة — 20240115"
+
+      • is_unknown_problem = True   → Problème INCONNU (hors dataset)
+            TTS = dernier message du client tel quel (arabe brut)
+            Pas de suggested_action.
+    """
+    # Dernier message utilisateur (avant transfert)
+    history   = sess.get("history", [])
+    last_user = next((t for r, t in reversed(history) if r == "user"), "").strip()
+
+    # Problème original qui a déclenché le transfert (fallback)
+    original  = (sess.get("original_problem") or last_user or "").strip()
+
+    # Utiliser le flag explicite positionné lors du transfert
+    is_unknown = sess.get("is_unknown_problem", True)  # True par sécurité si absent
+
+    if not is_unknown:
+        # Problème CONNU → chercher la suggested_action
+        # Priorité : pending_intent (intent de la réclamation originale, fiable)
+        #            puis last_nlu["intent"] (peut être pollué par le dernier message,
+        #            ex. si l'utilisateur a tapé un numéro de demande)
+        pending = (sess.get("pending_intent") or "").strip()
+        nlu_int = (sess.get("last_nlu", {}).get("intent") or "").strip()
+        intent  = pending or nlu_int          # pending_intent a priorité
+        action  = _lookup_action(intent)
+        if action:
+            sep = " — " if last_user else ""
+            return f"{action}{sep}{last_user}"
+        # Aucune action trouvée → fallback message brut
+        return original or last_user
+    else:
+        # Problème INCONNU → message brut du client, pas de suggested_action
+        return original or last_user
+
+
+# ══════════════════════════════════════════════════════════
 #  APPRENTISSAGE EPHEMERE (session uniquement — identique à app.py)
 #  Oublié dès le redémarrage du serveur (in-memory uniquement).
 # ══════════════════════════════════════════════════════════
@@ -396,6 +502,7 @@ def _get_conv_state(conv_session_id: str) -> dict:
             "solution_given": False,
             "transferred": False,
             "last_transferred_problem": "",   # problème qui a déclenché le dernier transfert
+            "is_unknown_problem": False,      # True = hors dataset → TTS lit le message brut
             "session_learned_responses": [],  # réponses apprises dans cette session (éphémères)
         }
     return user_conv_state[conv_session_id]
@@ -543,7 +650,8 @@ def process_user_message(conv_session_id: str, user_text: str) -> dict:
 
     # ── Numéro de demande demandé → transfert immédiat ────
     if stage == "waiting_for_request_number":
-        sess["transferred"] = True
+        sess["transferred"]        = True
+        sess["is_unknown_problem"] = False   # problème connu — intent identifié
         sess["last_transferred_problem"] = sess.get("original_problem") or user_text
         bot_resp = Config.TRANSFER_MESSAGE
         transfer.create_ticket(session_id=conv_session_id,
@@ -553,7 +661,10 @@ def process_user_message(conv_session_id: str, user_text: str) -> dict:
                                rag_confidence=0)
         sess["history"].append(("bot", bot_resp))
         sess["stage"]          = "initial"
-        sess["pending_intent"] = ""
+        # NE PAS effacer pending_intent ici : _build_tts_text() en a besoin
+        # pour construire "suggested_action — numéro_demande".
+        # Il sera effacé plus tard lors de la réponse de l'agent
+        # (api_internal_agent_reply / api_reset_transfer).
         sess["solution_given"] = True
         return {"bot_response": bot_resp, "session_ended": False,
                 "transferred": True, "statut": "transferee"}
@@ -608,8 +719,9 @@ def process_user_message(conv_session_id: str, user_text: str) -> dict:
                                    nlu_result=nlu_result,
                                    rag_confidence=clari["confidence"])
             sess["history"].append(("bot", bot_resp))
-            sess["stage"]          = "initial"
-            sess["transferred"]    = True
+            sess["stage"]              = "initial"
+            sess["transferred"]        = True
+            sess["is_unknown_problem"] = True   # hors dataset → TTS = message brut
             sess["last_transferred_problem"] = sess.get("original_problem") or user_text
             sess["solution_given"] = True
             return {"bot_response": bot_resp, "session_ended": False,
@@ -623,7 +735,8 @@ def process_user_message(conv_session_id: str, user_text: str) -> dict:
                                    nlu_result=nlu_result,
                                    rag_confidence=clari["confidence"])
             sess["history"].append(("bot", bot_resp))
-            sess["transferred"]    = True
+            sess["transferred"]        = True
+            sess["is_unknown_problem"] = True   # hors dataset → TTS = message brut
             sess["last_transferred_problem"] = sess.get("original_problem") or user_text
             sess["solution_given"] = True
             return {"bot_response": bot_resp, "session_ended": False,
@@ -678,10 +791,17 @@ def process_user_message(conv_session_id: str, user_text: str) -> dict:
                                nlu_result=nlu_result,
                                rag_confidence=rag_conf)
         sess["history"].append(("bot", bot_resp))
-        sess["transferred"]    = True
+        sess["transferred"]        = True
+        # Utiliser UNIQUEMENT pending_intent (jamais active_intent ni intent brut NLU)
+        # pending_intent est défini UNIQUEMENT quand le problème est reconnu via clarification
+        # → pour les problèmes inconnus, pending_intent est toujours vide → is_unknown = True
+        _p4 = (sess.get("pending_intent") or "").strip()
+        _known_p4 = bool(_p4 and _lookup_action(_p4))
+        sess["is_unknown_problem"] = not _known_p4
+        if not _known_p4:
+            sess["pending_intent"] = ""
         sess["last_transferred_problem"] = sess.get("original_problem") or user_text
         sess["stage"]          = "initial"
-        sess["pending_intent"] = ""
         sess["solution_given"] = True
         return {"bot_response": bot_resp, "session_ended": False,
                 "transferred": True, "statut": "transferee"}
@@ -699,7 +819,13 @@ def process_user_message(conv_session_id: str, user_text: str) -> dict:
         (t for role, t in reversed(sess.get("history", [])) if role == "bot"), ""
     )
     if last_bot and bot_resp.strip() == last_bot.strip():
-        sess["transferred"] = True
+        sess["transferred"]        = True
+        # Utiliser UNIQUEMENT pending_intent (jamais active_intent ni intent brut NLU)
+        _p5 = (sess.get("pending_intent") or "").strip()
+        _known_p5 = bool(_p5 and _lookup_action(_p5))
+        sess["is_unknown_problem"] = not _known_p5
+        if not _known_p5:
+            sess["pending_intent"] = ""
         sess["last_transferred_problem"] = sess.get("original_problem") or user_text
         bot_resp = Config.TRANSFER_MESSAGE
         transfer.create_ticket(session_id=conv_session_id,
@@ -709,14 +835,16 @@ def process_user_message(conv_session_id: str, user_text: str) -> dict:
                                rag_confidence=rag_conf)
         sess["history"].append(("bot", bot_resp))
         sess["stage"]          = "initial"
-        sess["pending_intent"] = ""
         sess["solution_given"] = True
         return {"bot_response": bot_resp, "session_ended": False,
                 "transferred": True, "statut": "transferee"}
 
     sess["history"].append(("bot", bot_resp))
 
-    if "اعطيني رقم المطلب" in bot_resp:
+    if _ASK_NUMBER_RE.search(bot_resp):
+        # Le bot demande un numéro (transaction, demande, ligne…)
+        # → attendre le numéro de l'utilisateur avant transfert
+        # NE PAS effacer pending_intent : _build_tts_text() en a besoin
         sess["stage"] = "waiting_for_request_number"
     else:
         sess["stage"]          = "initial"
@@ -908,14 +1036,19 @@ def api_chat():
             f"phone='{phone}' name='{u_name}'"
         )
 
-        # Récupérer le texte du problème qui a déclenché le transfert
+        # ── Construire le texte TTS selon le type de problème ──────
+        # Problème connu (dans les 14 types du dataset) :
+        #   → TTS = suggested_action + dernier message client
+        # Problème inconnu :
+        #   → TTS = message brut du client en arabe
         _transfer_sess = user_conv_state.get(session_id, {})
-        problem_text   = _transfer_sess.get("last_transferred_problem", "")
+        problem_text   = _build_tts_text(_transfer_sess)
 
         # Stocker le problème dans Firebase pour que le back-office puisse l'afficher
-        if problem_text:
+        raw_problem = _transfer_sess.get("last_transferred_problem", "") or problem_text
+        if raw_problem:
             try:
-                conversation_update(conv_id_db, last_problem=problem_text)
+                conversation_update(conv_id_db, last_problem=raw_problem)
             except Exception as _cp_err:
                 logger.warning(f"[Asterisk] Echec stockage last_problem : {_cp_err}")
 
@@ -935,6 +1068,7 @@ def api_chat():
                 ticket_id=ticket_id,
                 user_name=u_name,
                 problem_text=problem_text,
+                session_id=conv_id_db,   # clé complète de user_conv_state → learning fonctionne
             )
             ami_called         = ami_result.get("success", False)
             asterisk_available = ami_called   # True seulement si l'AMI a repondu
@@ -1012,6 +1146,7 @@ def api_user_human_response():
     # Remettre la session en état initial pour que l'utilisateur puisse continuer
     sess["solution_given"]           = False
     sess["transferred"]              = False
+    sess["is_unknown_problem"]       = False
     sess["stage"]                    = "initial"
     sess["pending_intent"]           = ""
     sess["last_transferred_problem"] = ""
@@ -1085,6 +1220,7 @@ def api_internal_agent_reply():
     if sess:
         sess["solution_given"]           = False
         sess["transferred"]              = False
+        sess["is_unknown_problem"]       = False
         sess["stage"]                    = "initial"
         sess["pending_intent"]           = ""
         sess["last_transferred_problem"] = ""

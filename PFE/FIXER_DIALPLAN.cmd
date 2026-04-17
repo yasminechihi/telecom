@@ -32,8 +32,14 @@ wsl -u root -- mkdir -p /var/spool/asterisk/monitor
 wsl -u root -- chown -R asterisk:asterisk /var/spool/asterisk/monitor 2>nul
 wsl -u root -- chown -R asterisk:asterisk /usr/share/asterisk/sounds/custom 2>nul
 wsl -u root -- chmod 777 /var/spool/asterisk/monitor
-wsl -u root -- chmod 755 /usr/share/asterisk/sounds/custom
+wsl -u root -- chmod 777 /usr/share/asterisk/sounds/custom
 echo  [OK] Repertoires crees
+
+:: [1b] Installer ffmpeg dans WSL si absent (nécessaire pour TTS MP3→WAV)
+echo.
+echo  [1b] Verification ffmpeg dans WSL...
+wsl -u root -- bash -c "ffmpeg -version >nul 2>&1 && echo PRESENT || (echo Installation ffmpeg... && apt-get install -y ffmpeg -q)"
+echo  [OK] ffmpeg WSL verifie
 
 :: [2] Copier le dialplan dans WSL
 echo.

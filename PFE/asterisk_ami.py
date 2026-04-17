@@ -133,9 +133,14 @@ def check_asterisk_available() -> dict:
 
 def _generate_problem_tts(problem_text: str, ticket_id: str) -> str:
     """
-    Génère un fichier audio TTS du texte du problème client,
-    le convertit en WAV 8kHz mono (format Asterisk) et le copie
-    dans le répertoire sons de Asterisk dans WSL.
+    Génère un fichier audio TTS du texte du problème client et le place
+    dans le répertoire sons d'Asterisk dans WSL.
+
+    Stratégie (sans dépendance à Windows ffmpeg) :
+      1. Générer le MP3 sur Windows (edge-tts ou gTTS)
+      2. Copier le MP3 vers /tmp dans WSL via _win_path_to_wsl
+      3. Convertir MP3→WAV 8kHz avec ffmpeg/sox/avconv dans WSL
+      4. Déplacer le WAV vers /usr/share/asterisk/sounds/custom/
 
     Returns: nom du son Asterisk (ex: 'custom/tt_problem_abc123')
              ou '' en cas d'échec.
@@ -143,14 +148,14 @@ def _generate_problem_tts(problem_text: str, ticket_id: str) -> str:
     if not problem_text.strip():
         return ""
 
-    filename  = f"tt_problem_{ticket_id}" if ticket_id else "tt_problem_tmp"
-    mp3_path  = os.path.join(tempfile.gettempdir(), f"{filename}.mp3")
-    wav_path  = os.path.join(tempfile.gettempdir(), f"{filename}.wav")
+    filename = f"tt_problem_{ticket_id}" if ticket_id else "tt_problem_tmp"
+    mp3_path = os.path.join(tempfile.gettempdir(), f"{filename}.mp3")
 
-    # ── Étape 1 : Générer le TTS (MP3) ───────────────────────
+    # ── Étape 1 : Générer le TTS → MP3 (Windows Python) ─────────
+
     tts_ok = False
 
-    # Essai 1 : edge-tts (voix arabe haute qualité)
+    # Essai A : edge-tts module Python (voix arabe haute qualité)
     try:
         import edge_tts, asyncio
 
@@ -158,44 +163,37 @@ def _generate_problem_tts(problem_text: str, ticket_id: str) -> str:
             communicate = edge_tts.Communicate(problem_text, "ar-SA-HamedNeural")
             await communicate.save(mp3_path)
 
-        # Gérer les boucles d'événements déjà actives (Flask peut en avoir une)
-        try:
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                import concurrent.futures
-                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
-                    ex.submit(asyncio.run, _do_edge_tts()).result(timeout=20)
-            else:
-                loop.run_until_complete(_do_edge_tts())
-        except RuntimeError:
-            asyncio.run(_do_edge_tts())
+        # Créer une nouvelle boucle dans un thread pour éviter les conflits Flask
+        import concurrent.futures
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+            ex.submit(asyncio.run, _do_edge_tts()).result(timeout=25)
 
-        if os.path.exists(mp3_path) and os.path.getsize(mp3_path) > 0:
+        if os.path.exists(mp3_path) and os.path.getsize(mp3_path) > 500:
             tts_ok = True
-            logger.info(f"[TTS] edge-tts OK → {mp3_path}")
+            logger.info(f"[TTS] edge-tts (module) OK → {mp3_path}")
     except Exception as e:
-        logger.warning(f"[TTS] edge-tts échoué : {e}")
+        logger.warning(f"[TTS] edge-tts module échoué : {e}")
 
-    # Essai 2 : edge-tts via subprocess (si le module Python échoue)
+    # Essai B : edge-tts en ligne de commande
     if not tts_ok:
         try:
             r = subprocess.run(
                 ["edge-tts", "--voice", "ar-SA-HamedNeural",
                  "--text", problem_text, "--write-media", mp3_path],
-                capture_output=True, timeout=20
+                capture_output=True, timeout=25
             )
-            if r.returncode == 0 and os.path.exists(mp3_path):
+            if r.returncode == 0 and os.path.exists(mp3_path) and os.path.getsize(mp3_path) > 500:
                 tts_ok = True
                 logger.info(f"[TTS] edge-tts CLI OK → {mp3_path}")
         except Exception as e:
             logger.warning(f"[TTS] edge-tts CLI échoué : {e}")
 
-    # Essai 3 : gTTS (fallback)
+    # Essai C : gTTS (fallback internet)
     if not tts_ok:
         try:
             from gtts import gTTS
             gTTS(problem_text, lang="ar").save(mp3_path)
-            if os.path.exists(mp3_path) and os.path.getsize(mp3_path) > 0:
+            if os.path.exists(mp3_path) and os.path.getsize(mp3_path) > 500:
                 tts_ok = True
                 logger.info(f"[TTS] gTTS OK → {mp3_path}")
         except Exception as e:
@@ -205,64 +203,93 @@ def _generate_problem_tts(problem_text: str, ticket_id: str) -> str:
         logger.error("[TTS] Tous les moteurs TTS ont échoué")
         return ""
 
-    # ── Étape 2 : Convertir MP3 → WAV 8kHz mono (format Asterisk) ──
-    wav_ok = _convert_to_asterisk_wav(mp3_path, wav_path)
-    if not wav_ok:
-        logger.error("[TTS] Conversion WAV échouée")
-        return ""
+    # ── Étape 2 : Copier le MP3 vers WSL /tmp ────────────────────
+    wsl_mp3 = _win_path_to_wsl(mp3_path)
+    wsl_mp3_tmp = f"/tmp/{filename}.mp3"
+    wsl_wav_dst = f"{_WSL_SOUNDS_CUSTOM}/{filename}.wav"
 
-    # ── Étape 3 : Copier vers répertoire sons Asterisk dans WSL ──
-    wsl_wav = _win_path_to_wsl(wav_path)
+    # S'assurer que le répertoire de destination existe
     _wsl_sh(f"mkdir -p {_WSL_SOUNDS_CUSTOM}", timeout=5)
-    ok, _, err = _wsl_sh(
-        f"cp '{wsl_wav}' '{_WSL_SOUNDS_CUSTOM}/{filename}.wav'", timeout=10
+
+    ok_cp, _, err_cp = _wsl_sh(
+        f"cp '{wsl_mp3}' '{wsl_mp3_tmp}'", timeout=10
     )
-    if not ok:
-        logger.error(f"[TTS] Copie WSL échouée : {err}")
+    if not ok_cp:
+        logger.error(f"[TTS] Copie MP3 vers WSL échouée : {err_cp}")
         return ""
 
-    logger.info(f"[TTS] Son Asterisk prêt : custom/{filename}")
-    # Nettoyage des fichiers temporaires Windows
-    for p in (mp3_path, wav_path):
-        try:
-            if os.path.exists(p):
-                os.remove(p)
-        except Exception:
-            pass
+    # ── Étape 3 : Convertir MP3 → WAV 8kHz dans WSL ─────────────
+    # Essayer ffmpeg, sox, avconv dans l'ordre
+    conv_ok = False
 
+    # Essai ffmpeg (installé par défaut dans Ubuntu WSL)
+    ok_ff, _, err_ff = _wsl_sh(
+        f"ffmpeg -y -i '{wsl_mp3_tmp}' "
+        f"-ar 8000 -ac 1 -acodec pcm_s16le '{wsl_wav_dst}' 2>/dev/null",
+        timeout=30
+    )
+    if ok_ff:
+        # Vérifier que le fichier WAV a été créé et n'est pas vide
+        ok_test, out_test, _ = _wsl_sh(
+            f"test -s '{wsl_wav_dst}' && echo ok", timeout=5
+        )
+        if ok_test and "ok" in out_test:
+            conv_ok = True
+            logger.info(f"[TTS] Conversion ffmpeg (WSL) OK → {wsl_wav_dst}")
+    if not conv_ok:
+        logger.warning(f"[TTS] ffmpeg WSL : {err_ff[:80]}")
+
+    # Essai sox (alternative légère)
+    if not conv_ok:
+        ok_sox, _, err_sox = _wsl_sh(
+            f"sox '{wsl_mp3_tmp}' -r 8000 -c 1 -b 16 '{wsl_wav_dst}' 2>/dev/null",
+            timeout=30
+        )
+        if ok_sox:
+            ok_test, out_test, _ = _wsl_sh(
+                f"test -s '{wsl_wav_dst}' && echo ok", timeout=5
+            )
+            if ok_test and "ok" in out_test:
+                conv_ok = True
+                logger.info(f"[TTS] Conversion sox (WSL) OK → {wsl_wav_dst}")
+        if not conv_ok:
+            logger.warning(f"[TTS] sox WSL : {err_sox[:80]}")
+
+    # Essai avconv (alias ffmpeg sur certains systèmes)
+    if not conv_ok:
+        ok_av, _, _ = _wsl_sh(
+            f"avconv -y -i '{wsl_mp3_tmp}' "
+            f"-ar 8000 -ac 1 -acodec pcm_s16le '{wsl_wav_dst}' 2>/dev/null",
+            timeout=30
+        )
+        if ok_av:
+            ok_test, out_test, _ = _wsl_sh(
+                f"test -s '{wsl_wav_dst}' && echo ok", timeout=5
+            )
+            if ok_test and "ok" in out_test:
+                conv_ok = True
+                logger.info(f"[TTS] Conversion avconv (WSL) OK → {wsl_wav_dst}")
+
+    # Nettoyage du MP3 temporaire dans WSL et Windows
+    _wsl_sh(f"rm -f '{wsl_mp3_tmp}'", timeout=5)
+    try:
+        os.remove(mp3_path)
+    except Exception:
+        pass
+
+    if not conv_ok:
+        logger.error(
+            "[TTS] Conversion WAV dans WSL échouée. "
+            "Installer ffmpeg dans WSL : sudo apt-get install -y ffmpeg"
+        )
+        return ""
+
+    logger.info(f"[TTS] Son Asterisk prêt → custom/{filename}")
     return f"custom/{filename}"
 
 
 def _convert_to_asterisk_wav(src_path: str, dst_path: str) -> bool:
-    """
-    Convertit src_path (MP3 ou WAV) → WAV 8kHz mono 16-bit PCM (format Asterisk).
-    Essaie ffmpeg, puis pydub.
-    Returns True si réussi.
-    """
-    # Chercher ffmpeg dans les emplacements communs
-    ffmpeg_candidates = [
-        "ffmpeg",                                     # Dans PATH
-        r"C:\ffmpeg\bin\ffmpeg.exe",
-        r"C:\Program Files\ffmpeg\bin\ffmpeg.exe",
-        r"C:\Users\Yasmine\ffmpeg\bin\ffmpeg.exe",
-    ]
-
-    for ffmpeg in ffmpeg_candidates:
-        try:
-            r = subprocess.run(
-                [ffmpeg, "-y", "-i", src_path,
-                 "-ar", "8000", "-ac", "1",
-                 "-acodec", "pcm_s16le", dst_path],
-                capture_output=True, timeout=30
-            )
-            if r.returncode == 0 and os.path.exists(dst_path):
-                return True
-        except FileNotFoundError:
-            continue
-        except Exception:
-            continue
-
-    # Fallback : pydub (utilise ffmpeg en interne mais peut trouver son propre ffmpeg)
+    """(Conservé pour compatibilité — non utilisé dans le flux principal.)"""
     try:
         from pydub import AudioSegment
         sound = AudioSegment.from_file(src_path)
@@ -452,7 +479,8 @@ def _watch_and_transcribe(ticket_id: str, session_id: str,
 def originate_call(caller_number: str,
                    ticket_id: str = "",
                    user_name: str = "",
-                   problem_text: str = "") -> dict:
+                   problem_text: str = "",
+                   session_id: str = "") -> dict:
     """
     Déclenche un appel MicroSIP via Asterisk CLI (wsl asterisk -rx).
 
@@ -536,10 +564,12 @@ def originate_call(caller_number: str,
             )
 
         # ── 5. Démarrer le watcher STT (enregistrement → transcription) ──
+        # session_id = conv_id_db complet (clé de user_conv_state) ; fallback sur safe_ticket
+        _real_session_id = session_id or safe_ticket
         if safe_ticket:
             watcher = threading.Thread(
                 target=_watch_and_transcribe,
-                args=(safe_ticket, safe_ticket),  # ticket_id = session_id
+                args=(safe_ticket, _real_session_id),
                 daemon=True,
                 name=f"stt-watcher-{safe_ticket}",
             )

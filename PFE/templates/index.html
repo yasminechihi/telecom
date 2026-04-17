@@ -1539,9 +1539,9 @@ async function selectConversation(convId, userName, statut, sujet, ts) {
       msgsDiv.innerHTML = '<div style="text-align:center;padding:20px;color:var(--tt-muted);font-size:0.83rem;">Aucun message</div>';
     } else {
       msgsDiv.innerHTML = msgs.map(m => {
-        // NLU badge for user messages that have NLU data
+        // NLU badge for user messages — only for KNOWN intents (hide "غير محدد")
         let nluBadge = '';
-        if (m.role === 'user' && m.nlu_intent) {
+        if (m.role === 'user' && m.nlu_intent && m.nlu_intent !== 'غير محدد') {
           const conf = m.nlu_confidence || 0;
           const confColor = conf >= 70 ? '#2ecc71' : conf >= 40 ? '#f39c12' : '#e74c3c';
           nluBadge = `<div class="live-nlu-badge">
