@@ -13,7 +13,8 @@ pyaudio>=0.2.14
 numpy>=1.24.0
 
 # ── TTS : Text-to-Speech ─────────────────────────────────────
-gTTS>=2.3.2
+edge-tts>=6.1.9     # Voix Microsoft ar-TN-ReemNeural (TTS principal)
+gTTS>=2.3.2         # Fallback Google TTS
 pygame>=2.5.0       # Pour lire les fichiers audio générés
 pyttsx3>=2.90       # TTS hors-ligne (fallback)
 requests>=2.31.0    # Pour ElevenLabs API
@@ -42,6 +43,9 @@ pandas>=2.0.0
 
 # ── Backend Web ──────────────────────────────────────────────
 flask>=3.0.0
+
+# ── Firebase ──────────────────────────────────────────────────
+firebase-admin>=6.2.0   # Firestore (conversations + dataset NLP)
 
 # ── Logging & utilitaires ─────────────────────────────────────
 python-dotenv>=1.0.0
