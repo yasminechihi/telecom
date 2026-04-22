@@ -512,9 +512,46 @@ def _watch_and_transcribe(ticket_id: str, session_id: str,
 
     logger.info(f"[STT] Watcher démarré — en attente de : {wsl_rec_path}")
 
+    # ── Etat de la d\u00e9tection du canal Asterisk ─────────────────
+    # Objectif : rep\u00e9rer RAPIDEMENT la fin d'appel (< 10s) m\u00eame si
+    # aucun fichier d'enregistrement n'est produit (agent qui ne d\u00e9croche
+    # pas, appel coup\u00e9 trop t\u00f4t, codec qui \u00e9choue, etc.). Sans cette
+    # d\u00e9tection, le watcher attendrait le timeout complet (10 min) avant
+    # d'informer le backend → le panneau d'\u00e9valuation n'appara\u00eetrait
+    # jamais c\u00f4t\u00e9 utilisateur tant que ce timeout n'est pas atteint.
+    saw_active_channel   = False
+    channel_gone_since   = None   # timestamp quand le canal a disparu
+    CHANNEL_GRACE_SECS   = 8      # laisse un peu de temps au fichier d'arriver
+
     deadline = time.time() + timeout_secs
     while time.time() < deadline:
         time.sleep(4)  # Vérification toutes les 4 secondes
+
+        # ── A. D\u00e9tection d'activit\u00e9 du canal agent SIP/1001 ─────
+        # Si un canal SIP/1001-xxxx est actif → l'appel est en cours.
+        # D\u00e8s qu'il dispara\u00eet apr\u00e8s avoir \u00e9t\u00e9 actif, on sait que
+        # l'agent a raccroch\u00e9 → notification rapide au backend.
+        ok_ch, ch_out, _ = _wsl_rx("core show channels concise", timeout=5)
+        channel_active = False
+        if ok_ch and ch_out:
+            for line in ch_out.splitlines():
+                # Format concise : SIP/1001-00000001!context!exten!prio!state!...
+                if line.startswith(f"SIP/{AGENT_EXTEN}-") or line.startswith(f"PJSIP/{AGENT_EXTEN}-"):
+                    channel_active = True
+                    break
+
+        if channel_active:
+            if not saw_active_channel:
+                logger.info(f"[STT] Canal agent SIP/{AGENT_EXTEN} actif — appel en cours")
+            saw_active_channel  = True
+            channel_gone_since  = None
+        else:
+            if saw_active_channel and channel_gone_since is None:
+                channel_gone_since = time.time()
+                logger.info(
+                    f"[STT] Canal agent SIP/{AGENT_EXTEN} disparu — "
+                    f"attente {CHANNEL_GRACE_SECS}s pour \u00e9ventuel fichier"
+                )
 
         # Vérifier si le fichier existe ET est non-vide dans WSL
         ok, out, _ = _wsl_sh(
@@ -522,6 +559,25 @@ def _watch_and_transcribe(ticket_id: str, session_id: str,
             timeout=5
         )
         if not (ok and "yes" in out):
+            # ── B. Sortie rapide si canal disparu + grace d\u00e9pass\u00e9 ──
+            # Le canal agent \u00e9tait actif puis a disparu, et aucun fichier
+            # n'est arriv\u00e9 dans les CHANNEL_GRACE_SECS suivantes.
+            # Conclusion : appel termin\u00e9 sans recording exploitable →
+            # on notifie le backend imm\u00e9diatement (r\u00e9ponse vide) pour
+            # d\u00e9clencher le panneau d'\u00e9valuation c\u00f4t\u00e9 client.
+            if (channel_gone_since is not None and
+                (time.time() - channel_gone_since) >= CHANNEL_GRACE_SECS):
+                logger.warning(
+                    f"[STT] Fin d'appel d\u00e9tect\u00e9e via canal (ticket={ticket_id}) "
+                    f"sans enregistrement — signalement imm\u00e9diat au backend"
+                )
+                try:
+                    _post_agent_reply(ticket_id, session_id, "")
+                except Exception as _e:
+                    logger.warning(f"[STT] Echec signalement fin d'appel (canal) : {_e}")
+                # Nettoyage pr\u00e9ventif d'un \u00e9ventuel fichier tronqu\u00e9
+                _wsl_sh(f"rm -f '{wsl_rec_path}'", timeout=5)
+                return
             continue
 
         # Attendre 1 seconde pour que Asterisk finisse d'écrire le fichier
@@ -608,16 +664,35 @@ def _watch_and_transcribe(ticket_id: str, session_id: str,
             logger.info(f"[STT] Transcription finale : '{transcript}'")
             _post_agent_reply(ticket_id, session_id, transcript)
         else:
-            logger.warning(f"[STT] Transcription vide pour ticket {ticket_id}")
+            # Agent a raccroché mais rien d'exploitable n'a été transcrit
+            # (silence, bruit, Whisper en échec). On signale quand même la
+            # fin d'appel au backend avec une réponse vide pour déclencher
+            # le panneau d'évaluation côté client.
+            logger.warning(
+                f"[STT] Transcription vide pour ticket {ticket_id} — "
+                f"signalement fin d'appel (réponse vide) au backend"
+            )
+            try:
+                _post_agent_reply(ticket_id, session_id, "")
+            except Exception as _e:
+                logger.warning(f"[STT] Echec signalement fin d'appel (vide) : {_e}")
 
         # Supprimer l'enregistrement WSL
         _wsl_sh(f"rm -f '{wsl_rec_path}'", timeout=5)
         return
 
+    # ── Timeout : aucun enregistrement n'est arrivé ─────────────
+    # Le client n'a probablement pas décroché, ou Asterisk n'a rien
+    # enregistré. On notifie quand même le backend pour libérer le
+    # client et afficher le panneau d'évaluation.
     logger.warning(
         f"[STT] Timeout {timeout_secs}s — aucun enregistrement reçu "
-        f"pour ticket '{ticket_id}'"
+        f"pour ticket '{ticket_id}' — signalement fin d'appel au backend"
     )
+    try:
+        _post_agent_reply(ticket_id, session_id, "")
+    except Exception as _e:
+        logger.warning(f"[STT] Echec signalement fin d'appel (timeout) : {_e}")
 
 
 # ════════════════════════════════════════════════════════════

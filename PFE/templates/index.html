@@ -6,6 +6,7 @@
   <title>Tunisie Telecom — Back Office Admin</title>
   <link href="https://fonts.googleapis.com/css2?family=Cairo:wght@300;400;600;700;900&family=Inter:wght@300;400;600;700&display=swap" rel="stylesheet"/>
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css"/>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <style>
 /* ══════════════════════════════════════════════════
    VARIABLES — Même charte que user_dashboard.html
@@ -719,11 +720,186 @@ body {
 }
 .toast.show { opacity: 1; }
 
+/* ══════════════════════════════════════════════════
+   TAB 4 — DASHBOARD ADMIN (KPIs + Chart.js)
+══════════════════════════════════════════════════ */
+.dashboard-layout {
+  padding: 20px;
+  width: 100%;
+  overflow-y: auto;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+.dashboard-header {
+  display: flex; align-items: center; justify-content: space-between;
+}
+.dashboard-header h2 { font-size: 1.15rem; font-weight: 700; color: var(--tt-text); }
+.dashboard-header .dashboard-subtitle { font-size: 0.8rem; color: var(--tt-muted); margin-top: 2px; }
+
+.kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 14px;
+}
+.kpi-card {
+  background: var(--tt-white);
+  border: 1px solid var(--tt-border);
+  border-radius: var(--radius);
+  padding: 16px 18px;
+  box-shadow: var(--shadow-sm);
+  display: flex; flex-direction: column; gap: 8px;
+  position: relative;
+  overflow: hidden;
+}
+.kpi-card::after {
+  content: ''; position: absolute; top: 0; right: 0;
+  width: 4px; height: 100%; background: var(--tt-purple);
+}
+.kpi-card.green::after  { background: var(--tt-green); }
+.kpi-card.orange::after { background: var(--tt-orange); }
+.kpi-card.blue::after   { background: var(--tt-teal); }
+.kpi-card.red::after    { background: var(--tt-red); }
+.kpi-label {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+  color: var(--tt-muted);
+  font-family: 'Inter', sans-serif;
+  font-weight: 700;
+  display: flex; align-items: center; gap: 7px;
+}
+.kpi-label i { color: var(--tt-purple); }
+.kpi-card.green  .kpi-label i { color: var(--tt-green); }
+.kpi-card.orange .kpi-label i { color: var(--tt-orange); }
+.kpi-card.blue   .kpi-label i { color: var(--tt-teal); }
+.kpi-card.red    .kpi-label i { color: var(--tt-red); }
+.kpi-value {
+  font-size: 1.7rem;
+  font-weight: 700;
+  color: var(--tt-text);
+  font-family: 'Inter', sans-serif;
+}
+.kpi-sub {
+  font-size: 0.75rem;
+  color: var(--tt-muted);
+}
+.kpi-percent {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  background: var(--tt-purple-bg);
+  color: var(--tt-purple);
+  margin-left: 6px;
+}
+.kpi-card.green  .kpi-percent { background: rgba(22,163,74,0.12);  color: var(--tt-green); }
+.kpi-card.orange .kpi-percent { background: rgba(217,119,6,0.12);  color: var(--tt-orange); }
+.kpi-card.blue   .kpi-percent { background: rgba(0,180,216,0.12);  color: var(--tt-teal); }
+.kpi-card.red    .kpi-percent { background: rgba(232,0,45,0.12);   color: var(--tt-red); }
+
+.dashboard-charts {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+}
+.chart-card {
+  background: var(--tt-white);
+  border: 1px solid var(--tt-border);
+  border-radius: var(--radius);
+  padding: 18px;
+  box-shadow: var(--shadow-sm);
+}
+.chart-card h4 {
+  font-size: 0.78rem;
+  color: var(--tt-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+  font-family: 'Inter', sans-serif;
+  margin-bottom: 12px;
+  font-weight: 700;
+  display: flex; align-items: center; gap: 7px;
+}
+.chart-card h4 i { color: var(--tt-purple); }
+.chart-wrap {
+  position: relative;
+  height: 280px;
+}
+.chart-legend-inline {
+  display: flex; flex-wrap: wrap; gap: 10px; margin-top: 10px;
+  font-size: 0.78rem;
+}
+.chart-legend-inline .lg-item {
+  display: flex; align-items: center; gap: 6px;
+}
+.chart-legend-inline .lg-dot {
+  width: 10px; height: 10px; border-radius: 3px;
+}
+
+/* ══════════════════════════════════════════════════
+   NLU DETAIL SIDE PANEL (Live Conversations)
+   → réutilise les styles .panel-card / .decision-badge /
+     .analysis-row / .sentiment-pill / .confidence-bar
+     définis pour le Test Bot.
+══════════════════════════════════════════════════ */
+.backoffice-layout.with-nlu {
+  grid-template-columns: 340px 1fr 340px;
+}
+.nlu-side-panel {
+  background: #FAFAFA;
+  border-left: 1px solid var(--tt-border);
+  display: flex; flex-direction: column;
+  overflow: hidden;
+}
+.nlu-side-header {
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--tt-border);
+  background: var(--tt-purple-bg);
+  flex-shrink: 0;
+}
+.nlu-side-header h3 {
+  font-size: 0.85rem;
+  font-weight: 700;
+  color: var(--tt-purple);
+  display: flex; align-items: center; gap: 7px;
+}
+.nlu-side-header p {
+  font-size: 0.7rem;
+  color: var(--tt-muted);
+  margin-top: 2px;
+}
+.nlu-side-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 14px;
+}
+.nlu-side-body::-webkit-scrollbar { width: 4px; }
+.nlu-side-body::-webkit-scrollbar-thumb { background: var(--tt-border); }
+.nlu-empty {
+  text-align: center;
+  color: var(--tt-muted);
+  font-size: 0.82rem;
+  padding: 40px 16px;
+  display: flex; flex-direction: column; align-items: center; gap: 10px;
+}
+.nlu-empty i { font-size: 2rem; color: var(--tt-border); }
+
+/* Messages cliquables */
+.live-msg { cursor: pointer; transition: background 0.15s; border-radius: 10px; }
+.live-msg.selected .live-msg-bubble {
+  box-shadow: 0 0 0 2px var(--tt-purple);
+}
+
 @media (max-width: 900px) {
   .bot-layout { grid-template-columns: 1fr; }
   .analysis-panel { display: none; }
   .backoffice-layout { grid-template-columns: 1fr; }
+  .backoffice-layout.with-nlu { grid-template-columns: 1fr; }
+  .nlu-side-panel { display: none; }
   .conv-list-panel { display: none; }
+  .dashboard-charts { grid-template-columns: 1fr; }
   .sidebar { width: 56px; }
   .sidebar .nav-item span { display: none; }
   .sidebar-section, .sidebar-footer { display: none; }
@@ -773,6 +949,10 @@ body {
       <i class="fas fa-ticket"></i>
       <span>Tickets</span>
       <span class="nav-badge" id="ticketBadge" style="display:none">0</span>
+    </a>
+    <a class="nav-item" onclick="switchTab('dashboard', this)" href="#">
+      <i class="fas fa-chart-pie"></i>
+      <span>Dashboard Admin</span>
     </a>
 
     <div class="sidebar-section" style="margin-top:8px;">SYSTÈME</div>
@@ -923,7 +1103,7 @@ body {
     <!-- ║   TAB 2 : LIVE CONVERSATIONS          ║ -->
     <!-- ╚══════════════════════════════════════╝ -->
     <div class="tab-panel" id="panel-backoffice">
-      <div class="backoffice-layout">
+      <div class="backoffice-layout with-nlu" id="backofficeLayout">
 
         <!-- Conversation list -->
         <div class="conv-list-panel">
@@ -973,6 +1153,82 @@ body {
           </div>
         </div>
 
+        <!-- NLU Detail side panel (style identique au Test Bot) -->
+        <aside class="nlu-side-panel">
+          <div class="nlu-side-header">
+            <h3><i class="fas fa-magnifying-glass-chart"></i> Analyse NLU</h3>
+            <p>Dernier message utilisateur — mise à jour automatique</p>
+          </div>
+          <div class="nlu-side-body" id="nluSideBody">
+
+            <!-- État vide (affiché par défaut) -->
+            <div class="nlu-empty" id="nluEmpty">
+              <i class="fas fa-hand-pointer"></i>
+              <p>Aucun message sélectionné</p>
+            </div>
+
+            <!-- Contenu NLU (identique au Test Bot) — caché tant qu'aucun msg sélectionné -->
+            <div id="nluContent" style="display:none;">
+
+              <!-- Aperçu du message sélectionné -->
+              <div class="panel-card" style="margin-bottom:12px;">
+                <h4><i class="fas fa-comment-dots"></i> الرسالة المختارة</h4>
+                <div id="nluMsgPreview" style="font-size:0.85rem;color:var(--tt-text);direction:rtl;line-height:1.6;background:var(--tt-gray);border-radius:10px;padding:10px 12px;border:1px solid var(--tt-border);"></div>
+                <div id="nluMsgMeta" style="font-size:0.7rem;color:var(--tt-muted);margin-top:6px;font-family:'Inter',sans-serif;"></div>
+              </div>
+
+              <!-- قرار الذكاء الاصطناعي -->
+              <div class="panel-card" style="margin-bottom:12px;">
+                <h4><i class="fas fa-brain"></i> قرار الذكاء الاصطناعي</h4>
+                <div class="decision-badge decision-auto" id="liveDecisionBadge">
+                  <i class="fas fa-circle-check"></i>
+                  <span id="liveDecisionText">—</span>
+                </div>
+              </div>
+
+              <!-- تحليل NLU (copie conforme du Test Bot) -->
+              <div class="panel-card" style="margin-bottom:12px;">
+                <h4><i class="fas fa-magnifying-glass-chart"></i> تحليل NLU</h4>
+                <div class="analysis-row">
+                  <span class="analysis-label">نوع المشكلة</span>
+                  <span class="analysis-value" id="liveAIntent">—</span>
+                </div>
+                <div class="analysis-row">
+                  <span class="analysis-label">المشاعر</span>
+                  <span id="liveASentiment"><span class="sentiment-pill sentiment-neu">—</span></span>
+                </div>
+                <div class="analysis-row">
+                  <span class="analysis-label">نوع الخدمة</span>
+                  <span class="analysis-value blue" id="liveAService">—</span>
+                </div>
+                <div class="analysis-row">
+                  <span class="analysis-label">الولاية</span>
+                  <span class="analysis-value" id="liveAWilaya">—</span>
+                </div>
+                <div class="analysis-row">
+                  <span class="analysis-label">المعتمدية</span>
+                  <span class="analysis-value" id="liveADelegation">—</span>
+                </div>
+                <div class="analysis-row">
+                  <span class="analysis-label">الإجراء</span>
+                  <span class="analysis-value green" id="liveAAction" style="font-size:0.76rem;max-width:150px;text-align:left;">—</span>
+                </div>
+                <div style="margin-top:12px;">
+                  <div class="confidence-bar-wrap">
+                    <div class="confidence-label"><span>ثقة ML</span><span id="liveConfNluPct">0%</span></div>
+                    <div class="confidence-bar"><div class="confidence-fill" id="liveConfNluBar" style="width:0%"></div></div>
+                  </div>
+                  <div class="confidence-bar-wrap" style="margin-top:8px;">
+                    <div class="confidence-label"><span>ثقة RAG</span><span id="liveConfRagPct">0%</span></div>
+                    <div class="confidence-bar"><div class="confidence-fill blue" id="liveConfRagBar" style="width:0%"></div></div>
+                  </div>
+                </div>
+              </div>
+
+            </div>
+          </div>
+        </aside>
+
       </div>
     </div><!-- /panel-backoffice -->
 
@@ -992,6 +1248,84 @@ body {
         </div>
       </div>
     </div><!-- /panel-tickets -->
+
+    <!-- ╔══════════════════════════════════════╗ -->
+    <!-- ║   TAB 4 : DASHBOARD ADMIN             ║ -->
+    <!-- ╚══════════════════════════════════════╝ -->
+    <div class="tab-panel" id="panel-dashboard">
+      <div class="dashboard-layout">
+
+        <div class="dashboard-header">
+          <div>
+            <h2><i class="fas fa-chart-pie" style="color:var(--tt-purple);margin-left:8px;"></i> Dashboard Admin</h2>
+            <div class="dashboard-subtitle">Vue d'ensemble des réclamations et indicateurs de performance</div>
+          </div>
+          <button class="btn-refresh" onclick="loadAdminStats()">
+            <i class="fas fa-sync-alt"></i> Rafraîchir
+          </button>
+        </div>
+
+        <!-- KPI Cards -->
+        <div class="kpi-grid">
+
+          <div class="kpi-card">
+            <div class="kpi-label"><i class="fas fa-layer-group"></i> Total réclamations</div>
+            <div class="kpi-value" id="kpiTotal">—</div>
+            <div class="kpi-sub">toutes conversations</div>
+          </div>
+
+          <div class="kpi-card green">
+            <div class="kpi-label"><i class="fas fa-circle-check"></i> Résolues</div>
+            <div class="kpi-value"><span id="kpiResolues">—</span><span class="kpi-percent" id="kpiResoluesPct">0%</span></div>
+            <div class="kpi-sub">conversations traitées</div>
+          </div>
+
+          <div class="kpi-card blue">
+            <div class="kpi-label"><i class="fas fa-hourglass-half"></i> En cours</div>
+            <div class="kpi-value"><span id="kpiEncours">—</span><span class="kpi-percent" id="kpiEncoursPct">0%</span></div>
+            <div class="kpi-sub">actuellement actives</div>
+          </div>
+
+          <div class="kpi-card orange">
+            <div class="kpi-label"><i class="fas fa-headset"></i> Transférées</div>
+            <div class="kpi-value"><span id="kpiTransf">—</span><span class="kpi-percent" id="kpiTransfPct">0%</span></div>
+            <div class="kpi-sub">vers agent humain</div>
+          </div>
+
+          <div class="kpi-card">
+            <div class="kpi-label"><i class="fas fa-stopwatch"></i> Délai moyen de réponse</div>
+            <div class="kpi-value" id="kpiAvgDelay">—</div>
+            <div class="kpi-sub" id="kpiAvgDelaySub">sur conversations résolues</div>
+          </div>
+
+          <div class="kpi-card green">
+            <div class="kpi-label"><i class="fas fa-bolt"></i> Temps de résolution min.</div>
+            <div class="kpi-value" id="kpiMinDelay">—</div>
+            <div class="kpi-sub">plus rapide enregistré</div>
+          </div>
+
+        </div>
+
+        <!-- Charts -->
+        <div class="dashboard-charts">
+          <div class="chart-card">
+            <h4><i class="fas fa-chart-pie"></i> Répartition par statut</h4>
+            <div class="chart-wrap">
+              <canvas id="chartStatut"></canvas>
+            </div>
+            <div class="chart-legend-inline" id="chartLegend"></div>
+          </div>
+
+          <div class="chart-card">
+            <h4><i class="fas fa-chart-bar"></i> Volume par statut</h4>
+            <div class="chart-wrap">
+              <canvas id="chartBar"></canvas>
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </div><!-- /panel-dashboard -->
 
   </div><!-- /main-content -->
 </div><!-- /app-body -->
@@ -1033,6 +1367,13 @@ let currentAudio    = null;
 // Back-office state
 let selectedConvId     = null;
 let liveRefreshTimer   = null;
+let dashboardRefreshTimer = null;
+let selectedMsgIdx     = null;
+let currentConvMessages = [];
+
+// Chart instances (pour pouvoir les détruire avant re-render)
+let chartStatutInst = null;
+let chartBarInst    = null;
 
 /* ═══════════════════════════════════════════════════════════
    INIT
@@ -1065,6 +1406,14 @@ function switchTab(name, el) {
   }
   if (name === 'tickets') {
     loadTickets();
+  }
+  if (name === 'dashboard') {
+    loadAdminStats();
+    if (!dashboardRefreshTimer) {
+      dashboardRefreshTimer = setInterval(loadAdminStats, 30000);
+    }
+  } else {
+    if (dashboardRefreshTimer) { clearInterval(dashboardRefreshTimer); dashboardRefreshTimer = null; }
   }
 }
 
@@ -1535,10 +1884,14 @@ async function selectConversation(convId, userName, statut, sujet, ts) {
       problemBanner.style.display = 'none';
     }
 
+    // Stocker pour le panneau NLU
+    currentConvMessages = msgs;
+    selectedMsgIdx      = null;
+
     if (msgs.length === 0) {
       msgsDiv.innerHTML = '<div style="text-align:center;padding:20px;color:var(--tt-muted);font-size:0.83rem;">Aucun message</div>';
     } else {
-      msgsDiv.innerHTML = msgs.map(m => {
+      msgsDiv.innerHTML = msgs.map((m, idx) => {
         // NLU badge for user messages — only for KNOWN intents (hide "غير محدد")
         let nluBadge = '';
         if (m.role === 'user' && m.nlu_intent && m.nlu_intent !== 'غير محدد') {
@@ -1552,7 +1905,7 @@ async function selectConversation(convId, userName, statut, sujet, ts) {
           </div>`;
         }
         return `
-        <div class="live-msg ${m.role}">
+        <div class="live-msg ${m.role}" data-idx="${idx}" onclick="selectMessageNlu(${idx})">
           <div class="live-msg-av">${m.role === 'bot' ? '🤖' : '👤'}</div>
           <div style="flex:1;min-width:0;">
             <div class="live-msg-bubble">${escHtml(m.content || '')}</div>
@@ -1572,9 +1925,80 @@ async function selectConversation(convId, userName, statut, sujet, ts) {
     } else {
       actions.style.display = 'none';
     }
+
+    // ── Auto-afficher l'analyse NLU COMPLÈTE (rejoue NLU+RAG côté serveur) ──
+    // Utilise /api/conv_nlu_analysis qui applique exactement la même logique
+    // que le Test Bot (accumulation d'entités, _build_analysis).
+    loadConvNluAnalysis(convId, statut);
   } catch(e) {
     msgsDiv.innerHTML = '<div style="padding:20px;text-align:center;color:var(--tt-red);">Erreur chargement messages</div>';
   }
+}
+
+/* ═══════════════════════════════════════════════════════════
+   LIVE CONVERSATIONS — Analyse NLU complète (rejouée serveur)
+═══════════════════════════════════════════════════════════ */
+async function loadConvNluAnalysis(convId, statut) {
+  try {
+    const r = await fetch('/api/conv_nlu_analysis/' + encodeURIComponent(convId));
+    const d = await r.json();
+    if (!d.has_user_msg || !d.analysis) {
+      resetNluSidePanel();
+      return;
+    }
+    renderLiveNluAnalysis(d.analysis, d.last_user_text || '', statut);
+  } catch(e) {
+    console.warn('NLU analysis error:', e);
+    resetNluSidePanel();
+  }
+}
+
+function renderLiveNluAnalysis(a, lastUserText, statut) {
+  const empty   = document.getElementById('nluEmpty');
+  const content = document.getElementById('nluContent');
+  if (empty)   empty.style.display = 'none';
+  if (content) content.style.display = '';
+
+  // Aperçu du dernier message user
+  document.getElementById('nluMsgPreview').textContent = lastUserText || '';
+  document.getElementById('nluMsgMeta').textContent =
+    '👤 Dernier message utilisateur' + (statut ? '  —  ' + statutLabel(statut) : '');
+
+  // Décision (exactement comme updateAnalysis du Test Bot)
+  const badge = document.getElementById('liveDecisionBadge');
+  const dtext = document.getElementById('liveDecisionText');
+  if (a.decision === 'escalade_agent_humain' || a.escalate) {
+    badge.className = 'decision-badge decision-escalade';
+    dtext.innerHTML = '<i class="fas fa-headset"></i> تحويل لوكيل بشري';
+  } else if (a.action === 'تعلم من وكيل بشري') {
+    badge.className = 'decision-badge decision-escalade';
+    dtext.innerHTML = '<i class="fas fa-brain"></i> تعلّم مؤقت';
+  } else {
+    badge.className = 'decision-badge decision-auto';
+    dtext.innerHTML = '<i class="fas fa-circle-check"></i> حل تلقائي';
+  }
+
+  // Champs NLU (mêmes IDs/logique que Test Bot)
+  document.getElementById('liveAIntent').textContent     = a.intent       || '—';
+  document.getElementById('liveAService').textContent    = a.service_type  || '—';
+  document.getElementById('liveAWilaya').textContent     = a.wilaya        || '—';
+  document.getElementById('liveADelegation').textContent = a.delegation    || '—';
+  document.getElementById('liveAAction').textContent     = a.action        || '—';
+
+  const sentMap = {
+    'سلبي':   ['sentiment-neg','😤 سلبي'],
+    'إيجابي': ['sentiment-pos','😊 إيجابي'],
+    'محايد':  ['sentiment-neu','😐 محايد'],
+  };
+  const [cls, lbl] = sentMap[a.sentiment] || ['sentiment-neu', a.sentiment || '—'];
+  document.getElementById('liveASentiment').innerHTML = `<span class="sentiment-pill ${cls}">${lbl}</span>`;
+
+  const nlu = a.confidence_nlu || 0;
+  const rag = a.confidence_rag || 0;
+  document.getElementById('liveConfNluPct').textContent = nlu + '%';
+  document.getElementById('liveConfNluBar').style.width = nlu + '%';
+  document.getElementById('liveConfRagPct').textContent = rag + '%';
+  document.getElementById('liveConfRagBar').style.width = rag + '%';
 }
 
 async function sendAgentReply() {
@@ -1675,6 +2099,208 @@ async function submitTicketReply(ticketId, idx, sessionId) {
       loadTickets();
     }
   } catch(e) { showToast('❌ Erreur'); console.error(e); }
+}
+
+/* ═══════════════════════════════════════════════════════════
+   NLU DETAIL SIDE PANEL (Live Conversations) — identique Test Bot
+═══════════════════════════════════════════════════════════ */
+function resetNluSidePanel() {
+  const empty   = document.getElementById('nluEmpty');
+  const content = document.getElementById('nluContent');
+  if (empty)   empty.style.display = '';
+  if (content) content.style.display = 'none';
+}
+
+function selectMessageNlu(idx) {
+  if (!currentConvMessages || idx == null || idx < 0 || idx >= currentConvMessages.length) return;
+  selectedMsgIdx = idx;
+  const m = currentConvMessages[idx];
+
+  // Highlight du message sélectionné
+  document.querySelectorAll('.live-msg').forEach(el => el.classList.remove('selected'));
+  const el = document.querySelector('.live-msg[data-idx="' + idx + '"]');
+  if (el) el.classList.add('selected');
+
+  // Basculer du vide vers le contenu
+  const empty   = document.getElementById('nluEmpty');
+  const content = document.getElementById('nluContent');
+  if (empty)   empty.style.display = 'none';
+  if (content) content.style.display = '';
+
+  // Aperçu du message
+  document.getElementById('nluMsgPreview').textContent = m.content || '';
+  document.getElementById('nluMsgMeta').textContent =
+    (m.role === 'user' ? '👤 Utilisateur' : '🤖 Bot') + '  —  ' + (m.created_at || '');
+
+  // Construire l'objet "analysis" comme dans le Test Bot
+  const a = {
+    intent:         m.nlu_intent    || '',
+    service_type:   m.nlu_service   || '',
+    sentiment:      m.nlu_sentiment || '',
+    wilaya:         m.nlu_wilaya    || '',
+    delegation:     m.nlu_delegation|| '',
+    action:         m.nlu_action    || '',
+    confidence_nlu: m.nlu_confidence|| 0,
+    confidence_rag: m.nlu_conf_rag  || 0,
+    decision:       m.nlu_decision  || '',
+    escalate:       m.nlu_escalate  || false,
+  };
+
+  // Messages "bot" → décision : réponse automatique, vide le reste
+  const isBot = m.role === 'bot';
+
+  // Décision (même logique que updateAnalysis du Test Bot)
+  const badge = document.getElementById('liveDecisionBadge');
+  const dtext = document.getElementById('liveDecisionText');
+  if (isBot) {
+    badge.className = 'decision-badge decision-auto';
+    dtext.innerHTML = '<i class="fas fa-robot"></i> رد الوكيل الآلي';
+  } else if (a.decision === 'escalade_agent_humain' || a.escalate) {
+    badge.className = 'decision-badge decision-escalade';
+    dtext.innerHTML = '<i class="fas fa-headset"></i> تحويل لوكيل بشري';
+  } else if (a.action === 'تعلم من وكيل بشري') {
+    badge.className = 'decision-badge decision-escalade';
+    dtext.innerHTML = '<i class="fas fa-brain"></i> تعلّم مؤقت';
+  } else {
+    badge.className = 'decision-badge decision-auto';
+    dtext.innerHTML = '<i class="fas fa-circle-check"></i> حل تلقائي';
+  }
+
+  // Champs NLU (même remplissage que updateAnalysis)
+  document.getElementById('liveAIntent').textContent     = isBot ? '—' : (a.intent       || '—');
+  document.getElementById('liveAService').textContent    = isBot ? '—' : (a.service_type || '—');
+  document.getElementById('liveAWilaya').textContent     = isBot ? '—' : (a.wilaya       || '—');
+  document.getElementById('liveADelegation').textContent = isBot ? '—' : (a.delegation   || '—');
+  document.getElementById('liveAAction').textContent     = isBot ? '—' : (a.action       || '—');
+
+  const sentMap = {
+    'سلبي':   ['sentiment-neg','😤 سلبي'],
+    'إيجابي': ['sentiment-pos','😊 إيجابي'],
+    'محايد':  ['sentiment-neu','😐 محايد'],
+  };
+  const [cls, lbl] = (!isBot && sentMap[a.sentiment]) || ['sentiment-neu', isBot ? '—' : (a.sentiment || '—')];
+  document.getElementById('liveASentiment').innerHTML = `<span class="sentiment-pill ${cls}">${lbl}</span>`;
+
+  // Barres de confiance (ML + RAG)
+  const nlu = isBot ? 0 : (a.confidence_nlu || 0);
+  const rag = isBot ? 0 : (a.confidence_rag || 0);
+  document.getElementById('liveConfNluPct').textContent = nlu + '%';
+  document.getElementById('liveConfNluBar').style.width = nlu + '%';
+  document.getElementById('liveConfRagPct').textContent = rag + '%';
+  document.getElementById('liveConfRagBar').style.width = rag + '%';
+}
+
+/* ═══════════════════════════════════════════════════════════
+   DASHBOARD ADMIN
+═══════════════════════════════════════════════════════════ */
+async function loadAdminStats() {
+  try {
+    const r = await fetch('/api/admin_stats');
+    const d = await r.json();
+
+    const total = d.total || 0;
+    const counts = d.counts || {};
+    const pct = d.percentages || {};
+
+    document.getElementById('kpiTotal').textContent     = total;
+    document.getElementById('kpiResolues').textContent  = counts.resolue || 0;
+    document.getElementById('kpiEncours').textContent   = counts.en_cours || 0;
+    document.getElementById('kpiTransf').textContent    = counts.transferee || 0;
+    document.getElementById('kpiResoluesPct').textContent = (pct.resolue    || 0) + '%';
+    document.getElementById('kpiEncoursPct').textContent  = (pct.en_cours   || 0) + '%';
+    document.getElementById('kpiTransfPct').textContent   = (pct.transferee || 0) + '%';
+
+    document.getElementById('kpiAvgDelay').textContent = d.avg_response_str || '—';
+    document.getElementById('kpiMinDelay').textContent = d.min_response_str || '—';
+    document.getElementById('kpiAvgDelaySub').textContent =
+      (d.resolues_count ? `sur ${d.resolues_count} conversation(s) résolue(s)` : 'aucune conversation résolue');
+
+    renderStatutCharts(counts);
+  } catch(e) {
+    console.warn('Admin stats error:', e);
+    showToast('❌ Erreur chargement dashboard');
+  }
+}
+
+function renderStatutCharts(counts) {
+  const labels = ['En cours', 'Résolues', 'Transférées', 'Fermées'];
+  const data   = [
+    counts.en_cours   || 0,
+    counts.resolue    || 0,
+    counts.transferee || 0,
+    counts.fermee     || 0,
+  ];
+  const colors = ['#3B82F6', '#16A34A', '#D97706', '#9CA3AF'];
+
+  // Pie chart (camembert)
+  const ctx1 = document.getElementById('chartStatut');
+  if (ctx1 && window.Chart) {
+    if (chartStatutInst) chartStatutInst.destroy();
+    chartStatutInst = new Chart(ctx1, {
+      type: 'pie',
+      data: {
+        labels: labels,
+        datasets: [{
+          data: data,
+          backgroundColor: colors,
+          borderColor: '#fff',
+          borderWidth: 2,
+        }],
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+          legend: { position: 'bottom', labels: { font: { family: 'Cairo', size: 12 } } },
+          tooltip: {
+            callbacks: {
+              label: (ctx) => {
+                const total = ctx.dataset.data.reduce((a,b) => a+b, 0);
+                const v = ctx.parsed;
+                const p = total > 0 ? ((v/total)*100).toFixed(1) : 0;
+                return ` ${ctx.label} : ${v} (${p}%)`;
+              }
+            }
+          }
+        },
+      }
+    });
+  }
+
+  // Bar chart (volume)
+  const ctx2 = document.getElementById('chartBar');
+  if (ctx2 && window.Chart) {
+    if (chartBarInst) chartBarInst.destroy();
+    chartBarInst = new Chart(ctx2, {
+      type: 'bar',
+      data: {
+        labels: labels,
+        datasets: [{
+          label: 'Nombre de réclamations',
+          data: data,
+          backgroundColor: colors,
+          borderRadius: 6,
+        }],
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: { legend: { display: false } },
+        scales: {
+          y: { beginAtZero: true, ticks: { precision: 0 } },
+          x: { ticks: { font: { family: 'Cairo' } } }
+        },
+      }
+    });
+  }
+
+  // Legend inline
+  const lg = document.getElementById('chartLegend');
+  if (lg) {
+    lg.innerHTML = labels.map((l, i) =>
+      `<div class="lg-item"><span class="lg-dot" style="background:${colors[i]}"></span>${l} (${data[i]})</div>`
+    ).join('');
+  }
 }
 
 /* ═══════════════════════════════════════════════════════════

@@ -188,6 +188,28 @@ def conversation_update(conv_id: str, **kwargs):
     db.collection("conversations").document(conv_id).update(kwargs)
 
 
+def conversation_rate(conv_id: str, rating: int, feedback: str = "") -> bool:
+    """
+    Enregistre la note de satisfaction (1-5 étoiles) et un commentaire
+    optionnel sur une conversation. Retourne True si succès.
+    """
+    try:
+        rating = int(rating)
+    except (TypeError, ValueError):
+        return False
+    if rating < 1 or rating > 5:
+        return False
+
+    db = get_db()
+    db.collection("conversations").document(conv_id).update({
+        "satisfaction_rating":   rating,
+        "satisfaction_feedback": (feedback or "")[:500],
+        "satisfaction_rated_at": _now(),
+        "updated_at":            _now(),
+    })
+    return True
+
+
 def conversations_get_by_user(user_id: str, limit: int = 50) -> list:
     """Retourne les conversations d'un user, triées par date décroissante.
     Tri en Python pour éviter les index composites Firestore."""
@@ -232,6 +254,14 @@ def message_add(conv_id: str, user_id: str,
         doc["nlu_confidence"] = nlu_data.get("confidence", 0)
         doc["nlu_sentiment"]  = nlu_data.get("sentiment", "")
         doc["nlu_service"]    = nlu_data.get("service_type", "")
+        # Champs étendus (pour reproduire l'analyse du Test Bot dans la Live Conv.)
+        doc["nlu_wilaya"]     = nlu_data.get("wilaya", "")
+        doc["nlu_delegation"] = nlu_data.get("delegation", "")
+        doc["nlu_action"]     = nlu_data.get("action", "")
+        doc["nlu_decision"]   = nlu_data.get("decision", "")
+        doc["nlu_conf_rag"]   = nlu_data.get("confidence_rag", 0)
+        doc["nlu_ml_used"]    = nlu_data.get("ml_used", False)
+        doc["nlu_escalate"]   = nlu_data.get("escalate", False)
     doc_ref.set(doc)
     return doc_ref.id
 
@@ -329,17 +359,106 @@ def reclamations_get_by_user(user_id: str, limit: int = 50) -> list:
                 break
 
         result.append({
-            "reclamation_id": c_id,
-            "sujet":          conv.get("sujet")        or "—",
-            "service_type":   conv.get("service_type") or "—",
-            "statut":         conv.get("statut")       or "en_cours",
-            "created_at":     _ts(conv.get("created_at")),
-            "updated_at":     _ts(conv.get("updated_at")),
-            "nb_messages":    nb_messages,
-            "apercu":         apercu,
+            "reclamation_id":        c_id,
+            "sujet":                 conv.get("sujet")        or "—",
+            "service_type":          conv.get("service_type") or "—",
+            "statut":                conv.get("statut")       or "en_cours",
+            "created_at":            _ts(conv.get("created_at")),
+            "updated_at":            _ts(conv.get("updated_at")),
+            "nb_messages":           nb_messages,
+            "apercu":                apercu,
+            "satisfaction_rating":   conv.get("satisfaction_rating") or 0,
+            "satisfaction_feedback": conv.get("satisfaction_feedback") or "",
+            # Exposé pour que le front-end (user_dashboard) puisse ré-ouvrir
+            # automatiquement le panneau d'évaluation dès que l'agent humain
+            # raccroche, même après un rechargement de page.
+            "was_transferred":       bool(conv.get("was_transferred")) or (conv.get("statut") in ("transferee", "resolue") and bool(conv.get("transferred"))),
         })
 
     return result
+
+
+# ════════════════════════════════════════════════════════════
+#  BACK-OFFICE — Dashboard Admin (KPIs agrégés)
+# ════════════════════════════════════════════════════════════
+
+def admin_stats() -> dict:
+    """
+    Statistiques globales pour le dashboard admin :
+      - total réclamations (conversations)
+      - répartition par statut (en_cours, resolue, transferee, fermee)
+      - pourcentages par statut
+      - délai moyen de réponse (updated_at - created_at) pour conversations résolues
+      - temps de résolution minimum (min updated_at - created_at parmi résolues)
+    """
+    db = get_db()
+    docs = list(db.collection("conversations").stream())
+
+    total = 0
+    counts = {"en_cours": 0, "resolue": 0, "transferee": 0, "fermee": 0}
+    durations_resolues = []   # liste de durées (en secondes) pour les conv. resolues
+
+    for doc in docs:
+        d = doc.to_dict()
+        statut = d.get("statut", "en_cours")
+        total += 1
+        if statut in counts:
+            counts[statut] += 1
+        else:
+            counts["en_cours"] += 1
+
+        if statut == "resolue":
+            created = d.get("created_at")
+            updated = d.get("updated_at")
+            if created and updated and hasattr(created, "timestamp") and hasattr(updated, "timestamp"):
+                try:
+                    delta = (updated - created).total_seconds()
+                    if delta >= 0:
+                        durations_resolues.append(delta)
+                except Exception:
+                    pass
+
+    # Pourcentages
+    def _pct(n):
+        return round((n / total) * 100, 1) if total > 0 else 0.0
+
+    percentages = {
+        "en_cours":   _pct(counts["en_cours"]),
+        "resolue":    _pct(counts["resolue"]),
+        "transferee": _pct(counts["transferee"]),
+        "fermee":     _pct(counts["fermee"]),
+    }
+
+    # Délais
+    if durations_resolues:
+        avg_sec = sum(durations_resolues) / len(durations_resolues)
+        min_sec = min(durations_resolues)
+    else:
+        avg_sec = 0
+        min_sec = 0
+
+    def _fmt_duration(sec: float) -> str:
+        """Formate une durée en secondes en chaîne lisible."""
+        sec = int(sec)
+        if sec < 60:
+            return f"{sec} s"
+        if sec < 3600:
+            m, s = divmod(sec, 60)
+            return f"{m} min {s:02d}s"
+        h, rem = divmod(sec, 3600)
+        m = rem // 60
+        return f"{h} h {m:02d} min"
+
+    return {
+        "total":            total,
+        "counts":           counts,
+        "percentages":      percentages,
+        "avg_response_sec": round(avg_sec, 1),
+        "avg_response_str": _fmt_duration(avg_sec),
+        "min_response_sec": round(min_sec, 1),
+        "min_response_str": _fmt_duration(min_sec),
+        "resolues_count":   len(durations_resolues),
+    }
 
 
 # ════════════════════════════════════════════════════════════

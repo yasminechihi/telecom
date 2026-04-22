@@ -214,7 +214,29 @@ INTENT_PATTERNS = {
 }
 
 STOP_PATTERNS = [
-    r"وداعا|باي|بسلامة|yezzi|خلاص|شكرن|merci|au revoir|fin|سلام"
+    # Formules de clôture / adieu classiques (arabe + translittération + français)
+    r"وداعا|باي|بسلامة|yezzi|خلاص|شكرن|merci|au revoir|fin|سلام",
+    # Formules de remerciement en arabe (darija tunisienne) — avec et sans diacritiques
+    #   يعطيك الصحة / يعطيك ألف صحة / يعطيك ألف الصحة / يعطيك صحة
+    r"يعطيك\s*(?:الف)?\s*(?:ال)?\s*صحة",
+    #   عيشك / يعيشك
+    r"\bعيشك\b|\bيعيشك\b",
+    #   يرحم والديك (+ variantes والدينك, والدك)
+    r"يرحم\s*والد(?:ي|ي?ن)?ك|يرحم\s*بوك",
+    #   بارك الله فيك
+    r"بارك\s*الله\s*فيك",
+    #   ربي يفضلك
+    r"ربي\s*يفضلك|ربي\s*يعطيك|ربي\s*يبارك",
+    #   شكرا / شكراً (diacritiques retirés par _normalize)
+    r"\bشكرا\b|\bشكراً\b",
+    # Translittérations latines (tout est comparé en lowercase par _normalize)
+    r"\byaatik(?:\s+(?:el\s+)?s?saha|\s+alf\s+saha)?\b",
+    r"\b(?:3)?aychek\b|\ba[iy]chek\b",
+    r"\byarhem\s+weldik\b|\byarhem\s+bouk\b",
+    r"\bbarak?a\s*(?:allah|l+ah)(?:ou?)?\s*(?:fi|fe)k\b",
+    r"\brabbi\s+(?:y?fadhlek|y?baraklek|y?aatik)\b",
+    r"\bchokran\b|\bshokran\b",
+    r"\bmerci\s+beaucoup\b|\bthanks?\b|\bthank\s+you\b",
 ]
 
 
@@ -522,8 +544,19 @@ class NLUModule:
     # Utilitaires
     # ─────────────────────────────────────────────────────────
     def _normalize(self, text: str) -> str:
-        """Normalisation légère du darija."""
+        """Normalisation légère du darija.
+
+        - Retire la ponctuation usuelle (arabe + latine).
+        - Retire les diacritiques arabes (تشكيل) pour que شكراً ≡ شكرا.
+        - Normalise les variantes de alef (إ أ آ → ا).
+        - Normalise les ta marbouta finales (ة → ه) pour assouplir le matching.
+        - Collapse les espaces, trim, lowercase.
+        """
         text = re.sub(r'[؟!،,\.\?\!\:\;\|]', ' ', text)
+        # Diacritiques arabes (fatha/damma/kasra/shadda/sukun/tanween/alef khanjariya)
+        text = re.sub(r'[\u064B-\u065F\u0670]', '', text)
+        # Normalisation alef + ta marbouta
+        text = re.sub(r'[إأآ]', 'ا', text)
         return re.sub(r'\s+', ' ', text).strip().lower()
 
     def _extract_phone(self, text: str) -> str:

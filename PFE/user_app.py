@@ -87,7 +87,7 @@ from firebase_config import (
     user_create, user_get_by_email, user_get_by_id,
     user_update_last_login, user_update_profile,
     conversation_create, conversation_get, conversation_update,
-    conversations_get_by_user,
+    conversations_get_by_user, conversation_rate,
     message_add, messages_get_by_conversation,
     user_stats, reclamations_get_by_user,
 )
@@ -663,6 +663,14 @@ def process_user_message(conv_session_id: str, user_text: str) -> dict:
         "confidence":   round(float(ml_conf) * 100) if ml_conf <= 1 else int(ml_conf),
         "sentiment":    nlu_result.get("sentiment", ""),
         "service_type": service_type,
+        # Entités étendues (renseignées dans la Live Conv. — style Test Bot)
+        "wilaya":       nlu_result.get("entities", {}).get("wilaya", "")
+                        or sess.get("collected_entities", {}).get("wilaya", ""),
+        "delegation":   nlu_result.get("entities", {}).get("delegation", "")
+                        or sess.get("collected_entities", {}).get("delegation", ""),
+        "action":       nlu_result.get("action", ""),
+        "ml_used":      nlu_result.get("ml_used", False),
+        "backend":      nlu_result.get("backend", ""),
     }
 
     # ── active_intent : intent du RECORD (fiable) ou NLU sinon ───
@@ -809,6 +817,13 @@ def process_user_message(conv_session_id: str, user_text: str) -> dict:
 
     rag_conf     = rag_result.get("confidence", 0)
     rag_escalate = rag_result.get("escalate", False)
+
+    # Mémoriser le résultat RAG dans last_nlu pour affichage back-office
+    if "last_nlu" in sess:
+        sess["last_nlu"]["confidence_rag"] = round(float(rag_conf) * 100) if rag_conf <= 1 else int(rag_conf)
+        # action de secours depuis RAG si pas fournie par NLU
+        if not sess["last_nlu"].get("action"):
+            sess["last_nlu"]["action"] = rag_result.get("action", "")
 
     # Seuils stricts selon le stage
     current_stage = sess.get("stage")
@@ -1094,6 +1109,16 @@ def api_chat():
     _sess_state = user_conv_state.get(session_id, {})
     _nlu_data   = _sess_state.get("last_nlu", None)
 
+    # Enrichir avec la décision finale (escalade / résolue) pour le back-office
+    if _nlu_data is not None:
+        _transferred = bool(result.get("transferred"))
+        _nlu_data["escalate"] = _transferred
+        _nlu_data["decision"] = "escalade_agent_humain" if _transferred else "reponse_automatique"
+        # Wilaya / delegation finales depuis collected_entities (plus fiables)
+        _ce = _sess_state.get("collected_entities", {}) or {}
+        if _ce.get("wilaya"):     _nlu_data["wilaya"]     = _ce["wilaya"]
+        if _ce.get("delegation"): _nlu_data["delegation"] = _ce["delegation"]
+
     # ── Sauvegarder le message utilisateur (avec NLU si disponible) ──
     message_add(conv_id_db, user_id, "user", user_text, nlu_data=_nlu_data)
 
@@ -1105,10 +1130,17 @@ def api_chat():
     new_sujet   = result.get("sujet")   or conv.get("sujet",        "")
     new_service = result.get("service_type") or conv.get("service_type", "")
 
-    conversation_update(conv_id_db,
-                        statut=new_statut,
-                        sujet=new_sujet,
-                        service_type=new_service)
+    _upd_fields = dict(
+        statut=new_statut,
+        sujet=new_sujet,
+        service_type=new_service,
+    )
+    # Marquer la conversation comme ayant été transférée — permet au
+    # front-end / à /api/user/call_status de déduire l'état après un
+    # redémarrage serveur ou si la mémoire in-memory est vidée.
+    if result.get("transferred"):
+        _upd_fields["was_transferred"] = True
+    conversation_update(conv_id_db, **_upd_fields)
 
     # ── Transfert vers agent humain → appel Asterisk ─────
     ami_called         = False
@@ -1172,6 +1204,14 @@ def api_chat():
                     else "ami_down"
                 )
             logger.info(f"[Asterisk] {ami_result.get('message', str(ami_result))}")
+
+    # Si la conv a été transférée, enregistrer l'état pour le suivi
+    # "agent a raccroché" (utilisé par /api/user/call_status côté front-end).
+    # Note : on enregistre même si ami_called=False — ainsi le panneau
+    # d'évaluation pourra s'afficher dès que le statut de la conv passe
+    # à "resolue" (fallback robuste si Whisper/STT n'a pas tourné).
+    if result.get("transferred") and conv_id_db:
+        _call_state_mark_transferred(conv_id_db, ticket_id=conv_id_db)
 
     return jsonify({
         "bot_response":       bot_resp,
@@ -1251,6 +1291,59 @@ def api_user_human_response():
 
 _INTERNAL_SECRET = "tt_backoffice_2026"   # partagé avec app.py
 
+# ──────────────────────────────────────────────────────────
+# Suivi des appels transférés (in-memory) :
+#   conv_id  → {
+#     "transferred":     True si l'appel a été lancé,
+#     "agent_hung_up":   True quand l'agent raccroche (réponse reçue),
+#     "transferred_at":  timestamp epoch du transfert,
+#     "hung_up_at":      timestamp epoch quand l'agent raccroche,
+#     "agent_response":  texte transcrit (facultatif),
+#     "ticket_id":       identifiant ticket correspondant,
+#   }
+# Utilisé par /api/user/call_status pour que le front-end détecte
+# la fin d'appel et affiche l'évaluation étoiles à ce moment-là.
+# ──────────────────────────────────────────────────────────
+_call_states: dict = {}
+
+
+def _call_state_mark_transferred(conv_id: str, ticket_id: str = ""):
+    """Marque une conversation comme transférée (appel agent en cours)."""
+    import time as _t
+    if not conv_id:
+        return
+    _call_states[conv_id] = {
+        "transferred":     True,
+        "agent_hung_up":   False,
+        "transferred_at":  _t.time(),
+        "hung_up_at":      None,
+        "agent_response":  "",
+        "ticket_id":       ticket_id or conv_id,
+    }
+
+
+def _call_state_mark_hung_up(conv_id_or_ticket: str, response_text: str = ""):
+    """
+    Marque un appel comme terminé (agent a raccroché).
+    Accepte soit un conv_id, soit un ticket_id.
+    """
+    import time as _t
+    if not conv_id_or_ticket:
+        return
+    # Rechercher par clé directe OU par ticket_id
+    target_key = None
+    if conv_id_or_ticket in _call_states:
+        target_key = conv_id_or_ticket
+    else:
+        for k, st in _call_states.items():
+            if st.get("ticket_id") == conv_id_or_ticket:
+                target_key = k
+                break
+    if target_key:
+        _call_states[target_key]["agent_hung_up"]  = True
+        _call_states[target_key]["hung_up_at"]     = _t.time()
+        _call_states[target_key]["agent_response"] = (response_text or "")[:200]
+
 @app.route("/api/internal/agent_reply", methods=["POST"])
 def api_internal_agent_reply():
     """
@@ -1272,8 +1365,25 @@ def api_internal_agent_reply():
     response  = (data.get("response") or "").strip()
     sid       = data.get("session_id", "")
 
+    # ── Cas "agent a raccroché sans parler / Whisper vide / timeout" ──
+    # On accepte un `response` vide : on signale juste la fin d'appel au
+    # front-end (via _call_state_mark_hung_up + statut='resolue') sans
+    # ajouter de message dans le chat. Le panneau d'évaluation s'ouvrira
+    # à la prochaine itération du polling côté client.
     if not response:
-        return jsonify({"error": "Réponse vide"}), 400
+        try:
+            conversation_update(ticket_id, statut="resolue")
+        except Exception as _e:
+            logger.warning(f"[internal_agent_reply] Echec mise à jour statut (réponse vide) : {_e}")
+        try:
+            _call_state_mark_hung_up(sid or ticket_id, "")
+            logger.info(
+                f"[internal_agent_reply] Appel marqué terminé SANS transcription "
+                f"(ticket={ticket_id}) — panneau d'évaluation déclenché côté client"
+            )
+        except Exception as _e:
+            logger.warning(f"[internal_agent_reply] Echec marquage appel terminé (réponse vide) : {_e}")
+        return jsonify({"success": True, "hung_up_silent": True})
 
     # Résoudre le ticket côté Firestore
     try:
@@ -1330,6 +1440,14 @@ def api_internal_agent_reply():
         conversation_update(ticket_id, statut="resolue")
     except Exception as _e:
         logger.warning(f"[internal_agent_reply] Echec mise à jour statut : {_e}")
+
+    # ── Marquer l'appel comme terminé (agent a raccroché) ─────────
+    # Le client pourra évaluer via le panneau étoiles (polling côté front-end).
+    try:
+        _call_state_mark_hung_up(sid or ticket_id, response)
+        logger.info(f"[internal_agent_reply] Appel marqué terminé (ticket={ticket_id})")
+    except Exception as _e:
+        logger.warning(f"[internal_agent_reply] Echec marquage appel terminé : {_e}")
 
     return jsonify({"success": True, "learned": learned, "session_found": bool(sess)})
 
@@ -1428,6 +1546,133 @@ def api_stats():
     except Exception as e:
         logger.error(f"[api_stats] Erreur Firebase : {e}", exc_info=True)
         return jsonify({"total": 0, "resolues": 0, "transferees": 0, "en_cours": 0, "error": str(e)}), 500
+
+
+@app.route("/api/user/top_issues")
+@login_required
+def api_top_issues():
+    """
+    Retourne les principaux problèmes (sujets) de l'utilisateur,
+    agrégés par sujet et triés par fréquence décroissante.
+    Utilisé pour la liste + camembert sur le dashboard utilisateur.
+    """
+    try:
+        user_id = session["user_id"]
+        reclamations = reclamations_get_by_user(user_id, limit=500)
+
+        # Agrégation : on préfère 'sujet', sinon 'service_type', sinon 'Autre'
+        counts = {}
+        for r in reclamations:
+            label = (r.get("sujet") or "").strip()
+            if not label or label == "—":
+                label = (r.get("service_type") or "").strip()
+            if not label or label == "—":
+                label = "Autre"
+            # Joliser : majuscule initiale
+            label = label[:40]
+            counts[label] = counts.get(label, 0) + 1
+
+        issues = [{"label": k, "count": v} for k, v in counts.items()]
+        issues.sort(key=lambda x: x["count"], reverse=True)
+
+        return jsonify({"issues": issues, "total": len(reclamations)})
+    except Exception as e:
+        logger.error(f"[api_top_issues] Erreur Firebase : {e}", exc_info=True)
+        return jsonify({"issues": [], "total": 0, "error": str(e)}), 500
+
+
+@app.route("/api/user/call_status/<conv_id>")
+@login_required
+def api_call_status(conv_id):
+    """
+    Retourne l'état d'un appel transféré :
+      - transferred   : True si l'appel a été lancé
+      - agent_hung_up : True dès que l'agent raccroche (réponse reçue)
+      - seconds_since : durée écoulée depuis le transfert
+      - statut        : statut courant de la conv (pour fallback front-end)
+
+    Stratégie de détection "agent a raccroché" (robuste) :
+      1. Signal primaire : _call_states[conv_id].agent_hung_up=True
+         (positionné par api_internal_agent_reply quand Whisper transcrit la réponse)
+      2. Fallback : la conv a été marquée comme transférée puis son statut Firebase
+         a basculé de 'transferee' → 'resolue' (agent a raccroché même sans audio).
+    """
+    import time as _t
+    try:
+        # Vérifier que la conversation appartient bien à l'utilisateur
+        conv = conversation_get(conv_id)
+        if not conv or conv.get("user_id") != session["user_id"]:
+            return jsonify({"ok": False, "error": "Non trouvé"}), 404
+
+        conv_statut = (conv.get("statut") or "").strip()
+        st = _call_states.get(conv_id)
+
+        # Pas d'état en mémoire : peut-être redémarrage serveur, mais la conv
+        # a peut-être été transférée puis résolue → on considère l'appel terminé
+        # seulement si on a une preuve explicite (statut = 'resolue' suffit si
+        # on a un champ "was_transferred" sur la conv ; sinon on se contente de
+        # reporter l'absence de suivi).
+        if not st:
+            was_transferred = bool(conv.get("was_transferred")) or conv_statut == "transferee"
+            agent_hung_up   = was_transferred and conv_statut == "resolue"
+            return jsonify({
+                "ok":            True,
+                "transferred":   was_transferred,
+                "agent_hung_up": agent_hung_up,
+                "seconds_since": 0,
+                "statut":        conv_statut,
+            })
+
+        # Fallback : si la conv est passée à "resolue" alors qu'elle était
+        # marquée transférée, l'agent a forcément raccroché (même si Whisper
+        # n'a rien capté ou si le watcher est en timeout).
+        if st.get("transferred") and not st.get("agent_hung_up") and conv_statut == "resolue":
+            _call_state_mark_hung_up(conv_id, "")
+            st = _call_states.get(conv_id, st)
+
+        seconds_since = int(_t.time() - (st.get("transferred_at") or _t.time()))
+        return jsonify({
+            "ok":             True,
+            "transferred":    bool(st.get("transferred")),
+            "agent_hung_up":  bool(st.get("agent_hung_up")),
+            "seconds_since":  seconds_since,
+            "statut":         conv_statut,
+            "agent_response": st.get("agent_response", "") if st.get("agent_hung_up") else "",
+        })
+    except Exception as e:
+        logger.error(f"[api_call_status] Erreur : {e}", exc_info=True)
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route("/api/user/rate_conversation", methods=["POST"])
+@login_required
+def api_rate_conversation():
+    """
+    Enregistre la note (1-5) et un feedback optionnel d'une conversation.
+    Body JSON : {"conv_id": "...", "rating": 1-5, "feedback": "..." }
+    """
+    try:
+        data = request.get_json(silent=True) or {}
+        conv_id  = (data.get("conv_id") or "").strip()
+        rating   = data.get("rating")
+        feedback = data.get("feedback") or ""
+
+        if not conv_id:
+            return jsonify({"ok": False, "error": "conv_id manquant"}), 400
+
+        # Vérification : la conversation appartient bien à l'utilisateur courant
+        conv = conversation_get(conv_id)
+        if not conv or conv.get("user_id") != session["user_id"]:
+            return jsonify({"ok": False, "error": "Conversation introuvable"}), 404
+
+        ok = conversation_rate(conv_id, rating, feedback)
+        if not ok:
+            return jsonify({"ok": False, "error": "Note invalide (1-5 attendu)"}), 400
+
+        return jsonify({"ok": True, "rating": int(rating)})
+    except Exception as e:
+        logger.error(f"[api_rate_conversation] Erreur : {e}", exc_info=True)
+        return jsonify({"ok": False, "error": str(e)}), 500
 
 
 @app.route("/api/user/asterisk_status")

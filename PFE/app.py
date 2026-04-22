@@ -1395,6 +1395,126 @@ def conv_messages(conv_id: str):
         return jsonify({"messages": [], "error": str(e)})
 
 
+@app.route("/api/conv_nlu_analysis/<conv_id>", methods=["GET"])
+def conv_nlu_analysis(conv_id: str):
+    """
+    Rejoue exactement la même logique NLU + RAG que le Test Bot sur une
+    conversation back-office, en accumulant les entités sur tous les messages
+    user (wilaya, delegation, service) comme le fait `_update_entities` en live.
+
+    Retourne le même dict d'analyse que `/api/chat` (cf. `_build_analysis`) :
+      intent, confidence_nlu, confidence_rag, sentiment, service_type,
+      wilaya, delegation, action, decision, escalate.
+    """
+    try:
+        from firebase_config import messages_get_by_conversation
+
+        msgs = messages_get_by_conversation(conv_id)
+        user_msgs = [m for m in msgs if m.get("role") == "user"]
+
+        if not user_msgs:
+            return jsonify({"analysis": None, "has_user_msg": False})
+
+        # Mini-session : on accumule collected_entities comme user_app le fait
+        mini_sess = {"collected_entities": {}, "history": []}
+
+        last_nlu  = None
+        last_rag  = None
+        last_text = ""
+
+        for m in user_msgs:
+            text = m.get("content", "") or ""
+            if not text.strip():
+                continue
+            try:
+                nlu_res = nlu.analyze(text)
+            except Exception as e:
+                logger.warning(f"[conv_nlu_analysis] NLU error on msg: {e}")
+                continue
+
+            # Accumulation des entités — même règle que _update_entities (user_app.py)
+            ents = nlu_res.get("entities", {}) or {}
+            loc_explicit = ents.get("location_explicit", False)
+            for k, v in ents.items():
+                if k == "location_explicit" or not v:
+                    continue
+                if k in ("wilaya", "delegation"):
+                    if loc_explicit:
+                        mini_sess["collected_entities"][k] = v
+                else:
+                    mini_sess["collected_entities"][k] = v
+
+            mini_sess["history"].append(("user", text))
+            last_nlu  = nlu_res
+            last_text = text
+
+        if last_nlu is None:
+            return jsonify({"analysis": None, "has_user_msg": False})
+
+        # RAG sur le dernier message user (avec historique)
+        try:
+            last_rag = response_eng.find_response(
+                last_text,
+                mini_sess["history"],
+                nlu_intent=last_nlu.get("intent", ""),
+            )
+        except Exception as e:
+            logger.warning(f"[conv_nlu_analysis] RAG error: {e}")
+            last_rag = {"confidence": 0, "escalate": False}
+
+        # Transféré → décision = escalade (comme Test Bot)
+        conv_transferred = False
+        try:
+            from firebase_config import conversation_get
+            conv_doc = conversation_get(conv_id)
+            if conv_doc and conv_doc.get("statut") == "transferee":
+                conv_transferred = True
+        except Exception:
+            pass
+
+        analysis = _build_analysis(
+            last_nlu,
+            last_rag,
+            clarifying=False,
+            collected_entities=mini_sess["collected_entities"],
+            transferred=conv_transferred,
+            unknown_problem=False,
+        )
+        return jsonify({
+            "analysis":      analysis,
+            "has_user_msg":  True,
+            "last_user_text": last_text,
+        })
+    except Exception as e:
+        logger.error(f"[conv_nlu_analysis] Erreur : {e}", exc_info=True)
+        return jsonify({"analysis": None, "has_user_msg": False, "error": str(e)})
+
+
+@app.route("/api/admin_stats", methods=["GET"])
+def admin_stats_route():
+    """
+    Dashboard Admin : statistiques globales agrégées.
+    Retourne :
+      - total réclamations
+      - répartition / pourcentages par statut
+      - délai moyen de réponse, temps min. de résolution
+    """
+    try:
+        from firebase_config import admin_stats
+        return jsonify(admin_stats())
+    except Exception as e:
+        logger.error(f"[admin_stats] Erreur : {e}", exc_info=True)
+        return jsonify({
+            "total": 0,
+            "counts": {"en_cours": 0, "resolue": 0, "transferee": 0, "fermee": 0},
+            "percentages": {"en_cours": 0, "resolue": 0, "transferee": 0, "fermee": 0},
+            "avg_response_sec": 0, "avg_response_str": "—",
+            "min_response_sec": 0, "min_response_str": "—",
+            "resolues_count": 0,
+            "error": str(e),
+        })
+
+
 _USER_APP_INTERNAL_SECRET = "tt_backoffice_2026"   # doit correspondre à user_app.py
 
 @app.route("/api/agent_reply", methods=["POST"])

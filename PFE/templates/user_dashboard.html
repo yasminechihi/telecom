@@ -6,6 +6,7 @@
   <title>Mon Espace TT — Dashboard</title>
   <link href="https://fonts.googleapis.com/css2?family=Cairo:wght@300;400;600;700;900&display=swap" rel="stylesheet"/>
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css"/>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <style>
 /* ══════════════════════════════════════════════════
    VARIABLES
@@ -349,6 +350,171 @@ body {
   color: var(--tt-muted);
   font-weight: 500;
 }
+.stat-pct {
+  display: inline-block;
+  font-size: 0.72rem;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 999px;
+  margin-top: 4px;
+  background: rgba(91,31,190,0.08);
+  color: var(--tt-purple);
+}
+.stat-card.resolues   .stat-pct { background: rgba(22,163,74,0.10);  color: var(--tt-green); }
+.stat-card.transferees .stat-pct { background: rgba(217,119,6,0.10); color: var(--tt-orange); }
+.stat-card.en-cours   .stat-pct { background: rgba(0,180,216,0.10); color: var(--tt-teal); }
+
+/* ── Principaux problèmes + camembert ── */
+.top-issues-wrap {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1rem;
+  margin-bottom: 1.5rem;
+}
+@media (max-width: 800px) {
+  .top-issues-wrap { grid-template-columns: 1fr; }
+}
+.issues-card {
+  background: white;
+  border-radius: var(--radius);
+  padding: 1.2rem 1.3rem;
+  box-shadow: var(--shadow-sm);
+  border-left: 4px solid var(--tt-purple);
+}
+.issues-card h4 {
+  font-size: 0.95rem;
+  font-weight: 700;
+  color: var(--tt-text);
+  margin-bottom: 0.9rem;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.issues-card h4 i { color: var(--tt-purple); }
+.issues-list { display: flex; flex-direction: column; gap: 0.55rem; }
+.issue-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.4rem 0.6rem;
+  background: var(--tt-purple-bg);
+  border-radius: 8px;
+  font-size: 0.85rem;
+}
+.issue-row .issue-label {
+  font-weight: 600;
+  color: var(--tt-text);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.issue-row .issue-count {
+  font-weight: 700;
+  color: var(--tt-purple);
+  background: white;
+  padding: 2px 10px;
+  border-radius: 999px;
+  font-size: 0.78rem;
+}
+.issues-empty {
+  color: var(--tt-muted);
+  font-size: 0.85rem;
+  text-align: center;
+  padding: 1.5rem 0;
+}
+.chart-wrap {
+  position: relative;
+  height: 240px;
+}
+
+/* ── Étoiles de satisfaction ── */
+.rating-panel {
+  background: linear-gradient(135deg, #F3EEFF 0%, #ffffff 100%);
+  border: 2px solid var(--tt-purple);
+  border-radius: var(--radius);
+  padding: 1.4rem;
+  margin: 1rem 1.5rem;
+  text-align: center;
+  animation: slideUp .3s ease;
+}
+@keyframes slideUp {
+  from { opacity: 0; transform: translateY(10px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.rating-panel h4 {
+  font-size: 1rem;
+  color: var(--tt-purple);
+  margin-bottom: 0.8rem;
+  font-weight: 700;
+}
+.rating-stars {
+  display: flex;
+  justify-content: center;
+  gap: 8px;
+  margin-bottom: 0.9rem;
+}
+.rating-star {
+  font-size: 1.9rem;
+  color: #d1d5db;
+  cursor: pointer;
+  transition: transform .15s, color .15s;
+}
+.rating-star:hover { transform: scale(1.15); }
+.rating-star.active { color: #F59E0B; }
+.rating-textarea {
+  width: 100%;
+  max-width: 420px;
+  padding: 0.55rem 0.8rem;
+  border: 1px solid var(--tt-border);
+  border-radius: 10px;
+  font-family: 'Cairo', sans-serif;
+  font-size: 0.85rem;
+  resize: vertical;
+  min-height: 58px;
+  margin-bottom: 0.8rem;
+}
+.rating-actions {
+  display: flex;
+  gap: 10px;
+  justify-content: center;
+}
+.rating-btn {
+  padding: 0.5rem 1.2rem;
+  border: none;
+  border-radius: 10px;
+  cursor: pointer;
+  font-family: 'Cairo', sans-serif;
+  font-weight: 600;
+  font-size: 0.82rem;
+  transition: all .15s;
+}
+.rating-btn.primary {
+  background: var(--tt-purple);
+  color: white;
+}
+.rating-btn.primary:hover { background: var(--tt-purple-dark); }
+.rating-btn.secondary {
+  background: #e5e7eb;
+  color: var(--tt-text);
+}
+.rating-done {
+  color: var(--tt-green);
+  font-weight: 700;
+  font-size: 0.95rem;
+}
+.rc-rating {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: #FEF3C7;
+  color: #B45309;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  margin-left: 6px;
+}
+.rc-rating i { font-size: 0.7rem; }
 
 /* Dernières réclamations (aperçu sur dashboard) */
 .section-title {
@@ -1304,6 +1470,7 @@ body {
             <div>
               <div class="stat-number" id="statTotal">—</div>
               <div class="stat-label">Total réclamations</div>
+              <div class="stat-pct" id="statTotalPct">100%</div>
             </div>
           </div>
           <div class="stat-card resolues">
@@ -1311,6 +1478,7 @@ body {
             <div>
               <div class="stat-number" id="statResolues">—</div>
               <div class="stat-label">Résolues</div>
+              <div class="stat-pct" id="statResoluesPct">0%</div>
             </div>
           </div>
           <div class="stat-card transferees">
@@ -1318,6 +1486,7 @@ body {
             <div>
               <div class="stat-number" id="statTransferees">—</div>
               <div class="stat-label">Transférées</div>
+              <div class="stat-pct" id="statTransfereesPct">0%</div>
             </div>
           </div>
           <div class="stat-card en-cours">
@@ -1325,6 +1494,23 @@ body {
             <div>
               <div class="stat-number" id="statEnCours">—</div>
               <div class="stat-label">En cours</div>
+              <div class="stat-pct" id="statEnCoursPct">0%</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Principaux problèmes + Camembert -->
+        <div class="top-issues-wrap">
+          <div class="issues-card">
+            <h4><i class="fas fa-list-ul"></i> Principaux problèmes</h4>
+            <div id="topIssuesList" class="issues-list">
+              <div class="issues-empty">Chargement…</div>
+            </div>
+          </div>
+          <div class="issues-card">
+            <h4><i class="fas fa-chart-pie"></i> Répartition des réclamations</h4>
+            <div class="chart-wrap">
+              <canvas id="issuesChart"></canvas>
             </div>
           </div>
         </div>
@@ -1411,6 +1597,34 @@ body {
 ابدأ بقول «عسلامة» وحدثني عن مشكلتك</div>
               <div class="msg-meta">Assistant TT</div>
             </div>
+          </div>
+        </div>
+
+        <!-- Panneau de satisfaction (apparaît à la fin de la conversation) -->
+        <div id="ratingPanel" class="rating-panel" style="display:none">
+          <h4><i class="fas fa-star" style="color:#F59E0B"></i> Évaluez votre expérience</h4>
+          <div id="ratingQuestion" style="color:var(--tt-muted);font-size:.85rem;margin-bottom:.6rem">
+            Votre avis nous aide à améliorer le service 🙏
+          </div>
+          <div class="rating-stars" id="ratingStars">
+            <i class="far fa-star rating-star" data-value="1"></i>
+            <i class="far fa-star rating-star" data-value="2"></i>
+            <i class="far fa-star rating-star" data-value="3"></i>
+            <i class="far fa-star rating-star" data-value="4"></i>
+            <i class="far fa-star rating-star" data-value="5"></i>
+          </div>
+          <textarea id="ratingFeedback" class="rating-textarea"
+                    placeholder="Un commentaire (facultatif)…"></textarea>
+          <div class="rating-actions">
+            <button class="rating-btn secondary" onclick="dismissRating()">
+              <i class="fas fa-times"></i> Plus tard
+            </button>
+            <button class="rating-btn primary" id="btnSubmitRating" onclick="submitRating()" disabled>
+              <i class="fas fa-paper-plane"></i> Envoyer
+            </button>
+          </div>
+          <div id="ratingDone" class="rating-done" style="display:none;margin-top:.7rem">
+            <i class="fas fa-check-circle"></i> Merci pour votre évaluation !
           </div>
         </div>
 
@@ -1948,10 +2162,22 @@ async function sendMessageText(text, isVoice = false) {
       // Lecture TTS de la réponse bot
       if (data.bot_response) playTTS(data.bot_response);
 
+      // ── Cas 1 : transfert vers agent humain ──
+      //    Ne PAS afficher l'évaluation tout de suite.
+      //    On démarre un polling qui détecte quand l'agent raccroche
+      //    (l'endpoint /api/user/call_status bascule agent_hung_up=true
+      //    lorsque la transcription de l'agent est reçue).
+      if (data.transferred && currentConvId) {
+        showToast('📞 Votre demande est transférée — attendez que l\'agent raccroche');
+        startCallStatusPoll(currentConvId);
+      }
+
+      // ── Cas 2 : fin normale de conversation ──
       if (data.session_ended) {
         setTimeout(() => {
           showToast('✅ Conversation terminée — Vous pouvez en démarrer une nouvelle');
-          currentConvId = null;
+          // Afficher le panneau d'évaluation AVANT de réinitialiser currentConvId
+          openRatingPanel(currentConvId, 'ended');
         }, 800);
       }
     }
@@ -2078,21 +2304,132 @@ function startNewChat() {
 /* ══════════════════════════════════════════════════
    STATS & HISTORIQUE
 ══════════════════════════════════════════════════ */
+let issuesChartInstance = null;
+
+function fmtPct(part, total) {
+  if (!total) return '0%';
+  return Math.round((part / total) * 100) + '%';
+}
+
 async function loadStats() {
   try {
     const res  = await fetch('/api/user/stats');
     const data = await res.json();
-    document.getElementById('statTotal').textContent     = data.total;
-    document.getElementById('statResolues').textContent  = data.resolues;
+    const total = +data.total || 0;
+    document.getElementById('statTotal').textContent       = data.total;
+    document.getElementById('statResolues').textContent    = data.resolues;
     document.getElementById('statTransferees').textContent = data.transferees;
-    document.getElementById('statEnCours').textContent   = data.en_cours;
+    document.getElementById('statEnCours').textContent     = data.en_cours;
+
+    // Pourcentages
+    document.getElementById('statTotalPct').textContent       = total ? '100%' : '0%';
+    document.getElementById('statResoluesPct').textContent    = fmtPct(data.resolues, total);
+    document.getElementById('statTransfereesPct').textContent = fmtPct(data.transferees, total);
+    document.getElementById('statEnCoursPct').textContent     = fmtPct(data.en_cours, total);
 
     // Récentes sur home
     const histRes  = await fetch('/api/user/history');
     const histData = await histRes.json();
     allReclamations = histData.reclamations;
     renderRecentOnHome(allReclamations.slice(0, 3));
+
+    // Principaux problèmes + camembert
+    loadTopIssues();
   } catch (e) {}
+}
+
+async function loadTopIssues() {
+  try {
+    const res  = await fetch('/api/user/top_issues');
+    const data = await res.json();
+    const list = data.issues || [];
+
+    // Liste
+    const listEl = document.getElementById('topIssuesList');
+    if (!list.length) {
+      listEl.innerHTML = '<div class="issues-empty"><i class="fas fa-inbox" style="font-size:1.3rem;margin-bottom:6px;display:block"></i>Aucun problème enregistré</div>';
+    } else {
+      listEl.innerHTML = list.slice(0, 5).map((it, idx) => `
+        <div class="issue-row">
+          <div class="issue-label">
+            <i class="fas fa-circle" style="font-size:0.5rem;color:${issueColor(idx)}"></i>
+            ${escapeHtml(it.label)}
+          </div>
+          <div class="issue-count">${it.count}</div>
+        </div>
+      `).join('');
+    }
+
+    // Camembert
+    renderIssuesChart(list.slice(0, 6));
+  } catch (e) {
+    document.getElementById('topIssuesList').innerHTML =
+      '<div class="issues-empty">Erreur de chargement</div>';
+  }
+}
+
+function issueColor(i) {
+  const palette = ['#5B1FBE', '#16A34A', '#D97706', '#00B4D8', '#E8002D', '#7B3FDE', '#64748B'];
+  return palette[i % palette.length];
+}
+
+function escapeHtml(s) {
+  return String(s || '')
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;')
+    .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function renderIssuesChart(items) {
+  const canvas = document.getElementById('issuesChart');
+  if (!canvas || typeof Chart === 'undefined') return;
+  const ctx = canvas.getContext('2d');
+
+  if (issuesChartInstance) { issuesChartInstance.destroy(); issuesChartInstance = null; }
+
+  if (!items || !items.length) {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = '#6B7280';
+    ctx.font = '14px Cairo';
+    ctx.textAlign = 'center';
+    ctx.fillText('Aucune donnée', canvas.width / 2, canvas.height / 2);
+    return;
+  }
+
+  const labels  = items.map(it => it.label);
+  const data    = items.map(it => it.count);
+  const colors  = items.map((_, i) => issueColor(i));
+
+  issuesChartInstance = new Chart(ctx, {
+    type: 'pie',
+    data: {
+      labels: labels,
+      datasets: [{
+        data: data,
+        backgroundColor: colors,
+        borderColor: '#fff',
+        borderWidth: 2
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: {
+          position: 'bottom',
+          labels: { font: { family: 'Cairo', size: 11 }, boxWidth: 14, padding: 10 }
+        },
+        tooltip: {
+          callbacks: {
+            label: function(ctx) {
+              const tot = ctx.dataset.data.reduce((a,b)=>a+b, 0);
+              const p = tot ? Math.round((ctx.parsed / tot) * 100) : 0;
+              return `${ctx.label}: ${ctx.parsed} (${p}%)`;
+            }
+          }
+        }
+      }
+    }
+  });
 }
 
 function renderRecentOnHome(items) {
@@ -2144,9 +2481,17 @@ function reclamationCardHTML(r) {
   const apercu = r.apercu
     ? (r.apercu.length > 100 ? r.apercu.substring(0, 100) + '…' : r.apercu)
     : 'Pas d\'aperçu disponible';
+  const rating = +r.satisfaction_rating || 0;
+  let ratingBadge = '';
+  if (rating > 0) {
+    const stars = '★'.repeat(rating) + '☆'.repeat(5 - rating);
+    ratingBadge = `<span class="rc-rating" title="Vous avez noté : ${rating}/5">
+      <i class="fas fa-star"></i> ${stars}
+    </span>`;
+  }
   return `
   <div class="reclamation-card ${r.statut || 'en_cours'}"
-       onclick="openDetail(${r.reclamation_id})">
+       onclick="openDetail('${r.reclamation_id}')">
     <div class="rc-header">
       <div class="rc-title">
         <i class="fas fa-folder" style="color:var(--tt-purple);margin-left:6px"></i>
@@ -2154,6 +2499,7 @@ function reclamationCardHTML(r) {
       </div>
       <span class="rc-badge ${r.statut || 'en_cours'}">
         ${statutLabels[r.statut] || r.statut}
+        ${ratingBadge}
       </span>
     </div>
     <div class="rc-apercu">${apercu}</div>
@@ -2265,6 +2611,204 @@ function showToast(msg, duration = 3500) {
 }
 
 /* ══════════════════════════════════════════════════
+   PANNEAU ÉVALUATION SATISFACTION
+══════════════════════════════════════════════════ */
+let selectedRating   = 0;
+let ratingConvId     = null;
+// Mémorise les conversations pour lesquelles le rating a déjà été proposé
+// (évite un double-affichage : transfert puis fermeture de session)
+const ratedConvs = new Set();
+
+// Messages d'évaluation selon le contexte
+const RATING_MESSAGES = {
+  ended:       "Votre avis nous aide à améliorer le service 🙏",
+  transferred: "L'agent a raccroché. Comment évaluez-vous la prise en charge de votre réclamation ?",
+  default:     "Votre avis nous aide à améliorer le service 🙏"
+};
+const RATING_TITLES = {
+  ended:       '<i class="fas fa-star" style="color:#F59E0B"></i> Évaluez votre expérience',
+  transferred: '<i class="fas fa-phone-slash" style="color:#D97706"></i> Appel terminé — Évaluez l\'agent',
+  default:     '<i class="fas fa-star" style="color:#F59E0B"></i> Évaluez votre expérience'
+};
+
+function openRatingPanel(convId, context = 'ended') {
+  if (!convId) return;
+  // Éviter de réafficher le panneau pour la même conversation
+  if (ratedConvs.has(convId)) return;
+  ratedConvs.add(convId);
+
+  ratingConvId   = convId;
+  selectedRating = 0;
+  const panel = document.getElementById('ratingPanel');
+  if (!panel) return;
+
+  // Adapter le titre et le message selon le contexte (transferré / fin normale)
+  const titleEl = panel.querySelector('h4');
+  const qEl     = document.getElementById('ratingQuestion');
+  if (titleEl) titleEl.innerHTML = RATING_TITLES[context] || RATING_TITLES.default;
+  if (qEl)     qEl.textContent   = RATING_MESSAGES[context] || RATING_MESSAGES.default;
+
+  // Reset visuel
+  document.querySelectorAll('.rating-star').forEach(s => {
+    s.classList.remove('active', 'fas');
+    s.classList.add('far');
+  });
+  document.getElementById('ratingFeedback').value = '';
+  document.getElementById('ratingDone').style.display = 'none';
+  document.getElementById('btnSubmitRating').disabled = true;
+  panel.style.display = 'block';
+  panel.scrollIntoView({ behavior: 'smooth', block: 'center' });
+}
+
+function dismissRating() {
+  const panel = document.getElementById('ratingPanel');
+  if (panel) panel.style.display = 'none';
+  currentConvId = null;
+  ratingConvId  = null;
+}
+
+/* ══════════════════════════════════════════════════
+   POLLING "agent a raccroché" (après transfert)
+══════════════════════════════════════════════════ */
+// Poll actif pour une conversation transférée.
+// Dès que /api/user/call_status renvoie agent_hung_up=true,
+// on ouvre le panneau d'évaluation avec le contexte "transferred".
+const callPolls = {};   // conv_id -> interval id
+
+function startCallStatusPoll(convId) {
+  if (!convId) return;
+  // Si déjà en cours, ne rien faire
+  if (callPolls[convId]) return;
+
+  let attempts = 0;
+  const MAX_ATTEMPTS = 900;  // ~1 heure à 4s d'intervalle (couvre les longs appels)
+
+  callPolls[convId] = setInterval(async () => {
+    attempts++;
+    // Sécurité : arrêter après MAX_ATTEMPTS pour éviter un polling infini
+    if (attempts > MAX_ATTEMPTS) {
+      stopCallStatusPoll(convId);
+      return;
+    }
+    try {
+      const res  = await fetch('/api/user/call_status/' + convId);
+      const data = await res.json();
+      // Déclencheurs (robustes) : soit le signal explicite agent_hung_up,
+      // soit le statut de la conversation est passé à "resolue" (fallback).
+      const shouldShow = data && data.ok && (
+        data.agent_hung_up === true ||
+        (data.transferred === true && data.statut === 'resolue')
+      );
+      if (shouldShow) {
+        stopCallStatusPoll(convId);
+        showToast('📴 L\'agent a raccroché — Évaluez votre expérience');
+        openRatingPanel(convId, 'transferred');
+      }
+    } catch (e) {
+      // Ignorer les erreurs réseau transitoires
+    }
+  }, 4000);
+}
+
+function stopCallStatusPoll(convId) {
+  if (callPolls[convId]) {
+    clearInterval(callPolls[convId]);
+    delete callPolls[convId];
+  }
+}
+
+/* ══════════════════════════════════════════════════
+   REPRISE AUTOMATIQUE — Panneau d'évaluation après transfert
+══════════════════════════════════════════════════ */
+// Conversations pour lesquelles le panneau a déjà été ouvert une fois
+// dans cette page (évite ré-ouverture en boucle).
+const _autoOpenedRating = new Set();
+
+// Récupère l'historique et :
+//   • démarre le polling pour chaque conversation encore "transferee"
+//     sans note (appel en cours → on attendra le raccroché).
+//   • ouvre immédiatement le panneau d'évaluation pour chaque
+//     conversation "resolue" qui a été transférée mais n'a pas
+//     encore été notée (cas : agent a raccroché, page rechargée,
+//     ou client n'a jamais remercié le bot).
+// Appelé au chargement de la page puis toutes les 30 secondes.
+async function resumePendingRatingPolls() {
+  try {
+    const res  = await fetch('/api/user/history');
+    const data = await res.json();
+    const list = data.reclamations || [];
+    list.forEach(r => {
+      const convId      = r.reclamation_id;
+      const needsRating = (+r.satisfaction_rating || 0) === 0;
+      if (!convId || !needsRating) return;
+
+      if (r.statut === 'transferee') {
+        // Appel en cours → polling : le panneau s'ouvrira dès que
+        // l'agent raccroche (statut → resolue ou agent_hung_up=true).
+        startCallStatusPoll(convId);
+      } else if (r.statut === 'resolue' && r.was_transferred) {
+        // Agent a déjà raccroché et le client n'a pas encore noté
+        // → ouvrir directement le panneau (une seule fois par page).
+        if (_autoOpenedRating.has(convId)) return;
+        _autoOpenedRating.add(convId);
+        currentConvId = convId;
+        openRatingPanel(convId, 'transferred');
+      }
+    });
+  } catch (_) {
+    // Ignorer les erreurs réseau transitoires
+  }
+}
+
+function setStarsVisual(value) {
+  document.querySelectorAll('.rating-star').forEach(s => {
+    const v = +s.dataset.value;
+    if (v <= value) {
+      s.classList.remove('far');
+      s.classList.add('fas', 'active');
+    } else {
+      s.classList.remove('fas', 'active');
+      s.classList.add('far');
+    }
+  });
+}
+
+async function submitRating() {
+  if (!selectedRating || !ratingConvId) return;
+  const feedback = document.getElementById('ratingFeedback').value.trim();
+  const btn = document.getElementById('btnSubmitRating');
+  btn.disabled = true;
+  try {
+    const res = await fetch('/api/user/rate_conversation', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        conv_id:  ratingConvId,
+        rating:   selectedRating,
+        feedback: feedback
+      })
+    });
+    const data = await res.json();
+    if (data.ok) {
+      document.getElementById('ratingDone').style.display = 'block';
+      showToast('⭐ Merci pour votre évaluation !');
+      setTimeout(() => {
+        document.getElementById('ratingPanel').style.display = 'none';
+        currentConvId = null;
+        ratingConvId  = null;
+        loadStats();     // Rafraîchir les stats
+      }, 1400);
+    } else {
+      showToast('❌ ' + (data.error || 'Erreur lors de l\'envoi'));
+      btn.disabled = false;
+    }
+  } catch (e) {
+    showToast('❌ Erreur de connexion');
+    btn.disabled = false;
+  }
+}
+
+/* ══════════════════════════════════════════════════
    INIT
 ══════════════════════════════════════════════════ */
 document.addEventListener('DOMContentLoaded', () => {
@@ -2274,11 +2818,32 @@ document.addEventListener('DOMContentLoaded', () => {
   // Revérifier le statut Asterisk toutes les 60 secondes
   setInterval(checkAsteriskStatus, 15000);
 
+  // Reprendre le polling d'évaluation pour toute conversation transférée
+  // encore non notée (p.ex. après un rechargement de page ou quand l'agent
+  // a raccroché sans que le client revienne remercier le bot).
+  resumePendingRatingPolls();
+  setInterval(resumePendingRatingPolls, 30000);
+
   // Focus chat input quand on arrive sur la section chat
   document.querySelector('[data-section="chat"]').addEventListener('click', () => {
     if (currentMode === 'text') {
       setTimeout(() => document.getElementById('chatInput').focus(), 100);
     }
+  });
+
+  // Gestion des clics sur les étoiles de satisfaction
+  document.querySelectorAll('.rating-star').forEach(star => {
+    star.addEventListener('mouseenter', () => {
+      setStarsVisual(+star.dataset.value);
+    });
+    star.addEventListener('mouseleave', () => {
+      setStarsVisual(selectedRating);
+    });
+    star.addEventListener('click', () => {
+      selectedRating = +star.dataset.value;
+      setStarsVisual(selectedRating);
+      document.getElementById('btnSubmitRating').disabled = false;
+    });
   });
 });
 </script>
