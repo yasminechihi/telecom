@@ -310,7 +310,11 @@ def _build_tts_text(sess: dict) -> str:
     original  = (sess.get("original_problem") or last_user or "").strip()
 
     # Utiliser le flag explicite positionné lors du transfert
-    is_unknown = sess.get("is_unknown_problem", True)  # True par sécurité si absent
+    # Défaut False : si absent (session initialisée avec False dans _get_conv_state)
+    is_unknown = sess.get("is_unknown_problem", False)
+
+    # ── Intents invalides — à filtrer dans TOUTES les sources ──────────────────
+    _INVALID_INTENTS = {"غير محدد", "unknown", "غير_محدد", ""}
 
     if not is_unknown:
         # Problème CONNU → chercher la suggested_action
@@ -318,20 +322,32 @@ def _build_tts_text(sess: dict) -> str:
         #            puis last_nlu["intent"] (peut être pollué par le dernier message,
         #            ex. si l'utilisateur a tapé un numéro de demande)
         pending = (sess.get("pending_intent") or "").strip()
+        # Filtrer pending si invalide (évite "غير محدد" comme intent principal)
+        if pending in _INVALID_INTENTS:
+            pending = ""
         nlu_int = (sess.get("last_nlu", {}).get("intent") or "").strip()
         # Filtrer les intents invalides (ex: "غير محدد" = dernier msg était un numéro)
-        if nlu_int in ("غير محدد", "unknown", "غير_محدد", ""):
+        if nlu_int in _INVALID_INTENTS:
             nlu_int = ""
-        intent  = pending or nlu_int          # pending_intent a priorité
-        action  = _lookup_action(intent)
+        intent = pending or nlu_int          # pending_intent a priorité
+        action = _lookup_action(intent)
+        # Fallback : si l'intent principal n'a pas d'action, tenter l'autre source
+        if not action and nlu_int and nlu_int != intent:
+            action = _lookup_action(nlu_int)
+        if not action and pending and pending != intent:
+            action = _lookup_action(pending)
         if action:
             sep = " — " if last_user else ""
             return f"{action}{sep}{last_user}"
         # Aucune action trouvée → fallback message brut
+        logger.warning(
+            f"[TTS] is_unknown=False mais aucune action trouvée "
+            f"(pending='{pending}' nlu_int='{nlu_int}') → message brut"
+        )
         return original or last_user
     else:
-        # Problème INCONNU → message brut du client, pas de suggested_action
-        return original or last_user
+        # Problème INCONNU → dernier message du client uniquement, pas de suggested_action
+        return last_user or original
 
 
 # ══════════════════════════════════════════════════════════
@@ -772,9 +788,18 @@ def process_user_message(conv_session_id: str, user_text: str) -> dict:
                                    nlu_result=nlu_result,
                                    rag_confidence=clari["confidence"])
             sess["history"].append(("bot", bot_resp))
-            sess["stage"]              = "initial"
-            sess["transferred"]        = True
-            sess["is_unknown_problem"] = True   # hors dataset → TTS = message brut
+            sess["stage"]       = "initial"
+            sess["transferred"] = True
+            # P2 : intent NLU inconnu + RAG vide. MAIS en conversation multi-tour,
+            # pending_intent peut être déjà positionné (problème connu au tour précédent).
+            # Si pending_intent est connu → conserver is_unknown_problem=False.
+            _p2_existing = (sess.get("pending_intent") or "").strip()
+            _p2_known = bool(
+                _p2_existing
+                and _p2_existing not in ("غير محدد", "unknown", "غير_محدد")
+                and _lookup_action(_p2_existing)
+            )
+            sess["is_unknown_problem"] = not _p2_known   # False si intent connu hérité
             sess["last_transferred_problem"] = sess.get("original_problem") or user_text
             sess["solution_given"] = True
             return {"bot_response": bot_resp, "session_ended": False,
@@ -789,7 +814,19 @@ def process_user_message(conv_session_id: str, user_text: str) -> dict:
                                    rag_confidence=clari["confidence"])
             sess["history"].append(("bot", bot_resp))
             sess["transferred"]        = True
-            sess["is_unknown_problem"] = True   # hors dataset → TTS = message brut
+            # P3 : RAG confidence faible.
+            # On fait confiance UNIQUEMENT à pending_intent s'il a été positionné
+            # dans un tour précédent (via clari_ok=True) — il est fiable.
+            # L'intent NLU du tour courant est EXCLU : trop risqué de confondre
+            # un problème inconnu avec un intent NLU mal classifié
+            # (ex : "عيب" → NLU classe à tort comme "عطب في الجهاز").
+            _p3_pending = (sess.get("pending_intent") or "").strip()
+            _p3_known   = bool(
+                _p3_pending
+                and _p3_pending not in ("غير محدد", "unknown", "غير_محدد")
+                and _lookup_action(_p3_pending)
+            )
+            sess["is_unknown_problem"] = not _p3_known
             sess["last_transferred_problem"] = sess.get("original_problem") or user_text
             sess["solution_given"] = True
             return {"bot_response": bot_resp, "session_ended": False,
