@@ -326,6 +326,7 @@ body {
 .stat-card.resolues { border-color: var(--tt-green); }
 .stat-card.transferees { border-color: var(--tt-orange); }
 .stat-card.en-cours { border-color: var(--tt-teal); }
+.stat-card.satisfaction { border-color: #F59E0B; }
 .stat-icon {
   width: 44px; height: 44px;
   border-radius: 12px;
@@ -339,6 +340,8 @@ body {
 .stat-card.resolues .stat-icon   { background: rgba(22,163,74,0.10); color: var(--tt-green); }
 .stat-card.transferees .stat-icon { background: rgba(217,119,6,0.10); color: var(--tt-orange); }
 .stat-card.en-cours .stat-icon   { background: rgba(0,180,216,0.10); color: var(--tt-teal); }
+.stat-card.satisfaction .stat-icon { background: rgba(245,158,11,0.10); color: #F59E0B; }
+.stat-card.satisfaction .stat-pct  { background: rgba(245,158,11,0.10); color: #B45309; }
 .stat-number {
   font-size: 1.8rem;
   font-weight: 900;
@@ -1497,6 +1500,14 @@ body {
               <div class="stat-pct" id="statEnCoursPct">0%</div>
             </div>
           </div>
+          <div class="stat-card satisfaction">
+            <div class="stat-icon"><i class="fas fa-star"></i></div>
+            <div>
+              <div class="stat-number" id="statSatisfaction" style="font-size:1.5rem">—</div>
+              <div class="stat-label">Satisfaction moyenne</div>
+              <div class="stat-pct" id="statSatisfactionCount">0 avis</div>
+            </div>
+          </div>
         </div>
 
         <!-- Principaux problèmes + Camembert -->
@@ -2326,6 +2337,28 @@ async function loadStats() {
     document.getElementById('statResoluesPct').textContent    = fmtPct(data.resolues, total);
     document.getElementById('statTransfereesPct').textContent = fmtPct(data.transferees, total);
     document.getElementById('statEnCoursPct').textContent     = fmtPct(data.en_cours, total);
+
+    // ── Satisfaction moyenne ──────────────────────────
+    const avg   = parseFloat(data.satisfaction_avg) || 0;
+    const count = parseInt(data.satisfaction_count) || 0;
+    const satEl  = document.getElementById('statSatisfaction');
+    const satCnt = document.getElementById('statSatisfactionCount');
+    if (avg > 0) {
+      // Afficher la note sous forme d'étoiles + valeur numérique
+      const fullStars  = Math.floor(avg);
+      const halfStar   = (avg - fullStars) >= 0.5;
+      let stars = '';
+      for (let i = 0; i < 5; i++) {
+        if (i < fullStars)       stars += '<i class="fas fa-star" style="color:#F59E0B;font-size:0.85rem"></i>';
+        else if (i === fullStars && halfStar) stars += '<i class="fas fa-star-half-alt" style="color:#F59E0B;font-size:0.85rem"></i>';
+        else                     stars += '<i class="far fa-star" style="color:#F59E0B;font-size:0.85rem"></i>';
+      }
+      satEl.innerHTML  = `${avg.toFixed(1)} <span style="font-size:0.85rem">${stars}</span>`;
+      satCnt.textContent = `${count} avis`;
+    } else {
+      satEl.textContent  = '—';
+      satCnt.textContent = 'Aucun avis';
+    }
 
     // Récentes sur home
     const histRes  = await fetch('/api/user/history');

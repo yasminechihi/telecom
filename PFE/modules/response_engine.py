@@ -73,9 +73,20 @@ class ResponseEngine:
                 self.model = SentenceTransformer(self.config.EMBEDDING_MODEL)
                 logger.info("Modèle embedding chargé depuis HuggingFace Hub.")
         except ImportError:
-            raise RuntimeError("sentence-transformers non installé")
+            # sentence-transformers absent → mode dégradé (TF-IDF uniquement)
+            logger.warning(
+                "sentence-transformers non installé — embedding désactivé. "
+                "Le bot fonctionnera en mode TF-IDF (sans similarité sémantique)."
+            )
+            self.model = None
         except Exception as e:
-            raise RuntimeError(f"Erreur chargement embedding: {e}")
+            # DLL manquante, version PyTorch incompatible, etc.
+            # NE PAS planter le serveur — continuer sans embedding.
+            logger.warning(
+                f"Embedding non disponible ({e}). "
+                "Le bot fonctionnera en mode TF-IDF avec l'index FAISS existant."
+            )
+            self.model = None
 
     # ─────────────────────────────────────────────────────────
     # Construction de l'index FAISS
@@ -84,6 +95,16 @@ class ResponseEngine:
         if (os.path.exists(self.config.FAISS_INDEX_PATH) and
                 os.path.exists(self.config.DATASET_CACHE_PATH)):
             self._load_index()
+        elif self.model is None:
+            # Embedding non disponible ET pas d'index préconstruit
+            # → continuer sans FAISS (mode dégradé TF-IDF uniquement)
+            logger.warning(
+                "Modèle embedding absent et aucun index FAISS en cache. "
+                "Le bot fonctionne en mode TF-IDF pur (sans RAG sémantique)."
+            )
+            self.records    = self._load_dataset() or []
+            self.index      = None
+            self.embeddings = None
         else:
             logger.info("Index FAISS absent — construction depuis le dataset...")
             self._build_index()

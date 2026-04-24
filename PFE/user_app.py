@@ -319,6 +319,9 @@ def _build_tts_text(sess: dict) -> str:
         #            ex. si l'utilisateur a tapé un numéro de demande)
         pending = (sess.get("pending_intent") or "").strip()
         nlu_int = (sess.get("last_nlu", {}).get("intent") or "").strip()
+        # Filtrer les intents invalides (ex: "غير محدد" = dernier msg était un numéro)
+        if nlu_int in ("غير محدد", "unknown", "غير_محدد", ""):
+            nlu_int = ""
         intent  = pending or nlu_int          # pending_intent a priorité
         action  = _lookup_action(intent)
         if action:
@@ -801,9 +804,10 @@ def process_user_message(conv_session_id: str, user_text: str) -> dict:
     if stage == "clarifying" and _is_negation(user_text):
         bot_resp = Config.NEGATION_CLARIFICATION_RESPONSE
         sess["history"].append(("bot", bot_resp))
-        sess["stage"]          = "initial"
-        sess["pending_intent"] = ""
-        sess["solution_given"] = True
+        sess["stage"]            = "initial"
+        sess["pending_intent"]   = ""
+        sess["original_problem"] = ""   # Fix TTS : l'user repart de zéro
+        sess["solution_given"]   = True
         return {"bot_response": bot_resp, "session_ended": False,
                 "transferred": False, "statut": "resolue"}
 
@@ -871,13 +875,19 @@ def process_user_message(conv_session_id: str, user_text: str) -> dict:
                                rag_confidence=rag_conf)
         sess["history"].append(("bot", bot_resp))
         sess["transferred"]        = True
-        # Utiliser UNIQUEMENT pending_intent (jamais active_intent ni intent brut NLU)
-        # pending_intent est défini UNIQUEMENT quand le problème est reconnu via clarification
-        # → pour les problèmes inconnus, pending_intent est toujours vide → is_unknown = True
+        # Déterminer si le problème est CONNU (dans les 14 types du dataset).
+        # Priorité : pending_intent (issu de la clarification)
+        # Fallback  : last_nlu["intent"] (NLU direct, fiable si clarification non déclenchée)
         _p4 = (sess.get("pending_intent") or "").strip()
+        if not _p4:
+            _p4 = (sess.get("last_nlu", {}).get("intent") or "").strip()
         _known_p4 = bool(_p4 and _lookup_action(_p4))
         sess["is_unknown_problem"] = not _known_p4
-        if not _known_p4:
+        if _known_p4:
+            # S'assurer que pending_intent est positionné pour _build_tts_text()
+            if not sess.get("pending_intent"):
+                sess["pending_intent"] = _p4
+        else:
             sess["pending_intent"] = ""
         sess["last_transferred_problem"] = sess.get("original_problem") or user_text
         sess["stage"]          = "initial"
@@ -915,11 +925,19 @@ def process_user_message(conv_session_id: str, user_text: str) -> dict:
                     "sujet": active_intent, "service_type": service_type}
 
         sess["transferred"]        = True
-        # Utiliser UNIQUEMENT pending_intent (jamais active_intent ni intent brut NLU)
+        # Déterminer si le problème est CONNU (dans les 14 types du dataset).
+        # Priorité : pending_intent (issu de la clarification)
+        # Fallback  : last_nlu["intent"] (NLU direct, fiable si clarification non déclenchée)
         _p5 = (sess.get("pending_intent") or "").strip()
+        if not _p5:
+            _p5 = (sess.get("last_nlu", {}).get("intent") or "").strip()
         _known_p5 = bool(_p5 and _lookup_action(_p5))
         sess["is_unknown_problem"] = not _known_p5
-        if not _known_p5:
+        if _known_p5:
+            # S'assurer que pending_intent est positionné pour _build_tts_text()
+            if not sess.get("pending_intent"):
+                sess["pending_intent"] = _p5
+        else:
             sess["pending_intent"] = ""
         sess["last_transferred_problem"] = sess.get("original_problem") or user_text
         bot_resp = Config.TRANSFER_MESSAGE
@@ -939,8 +957,14 @@ def process_user_message(conv_session_id: str, user_text: str) -> dict:
     if _ASK_NUMBER_RE.search(bot_resp):
         # Le bot demande un numéro (transaction, demande, ligne…)
         # → attendre le numéro de l'utilisateur avant transfert
-        # NE PAS effacer pending_intent : _build_tts_text() en a besoin
         sess["stage"] = "waiting_for_request_number"
+        # Fix TTS : s'assurer que pending_intent est positionné pour _build_tts_text()
+        # (peut ne pas être set si le bot a répondu directement sans passer par clarifying)
+        if not sess.get("pending_intent"):
+            sess["pending_intent"] = active_intent
+        # Fix TTS : s'assurer que original_problem est positionné (fallback pour TTS)
+        if not sess.get("original_problem"):
+            sess["original_problem"] = user_text
     elif _CALLBACK_NUMBER_RE.search(bot_resp):
         # Le bot demande le numéro de rappel du client (ex: خليلي رقمك)
         # → quand l'user répond avec son numéro, on dit juste au revoir (aucun transfert)
@@ -977,12 +1001,21 @@ def login():
         email    = request.form.get("email", "").strip().lower()
         password = request.form.get("password", "")
 
-        user = user_get_by_email(email)
+        try:
+            user = user_get_by_email(email)
+        except Exception as e:
+            logger.error(f"[login] Erreur Firebase : {e}")
+            error = "Service temporairement indisponible. Réessayez dans quelques instants."
+            return render_template("user_login.html", error=error, mode="login")
+
         if user and check_password_hash(user["password_hash"], password):
             session["user_id"]    = user["id"]
             session["user_nom"]   = user["nom"]
             session["user_prenom"] = user["prenom"]
-            user_update_last_login(user["id"])
+            try:
+                user_update_last_login(user["id"])
+            except Exception:
+                pass  # Non bloquant
             return redirect(url_for("dashboard"))
         else:
             error = "Email ou mot de passe incorrect."
@@ -1012,19 +1045,23 @@ def register():
         elif len(password) < 6:
             error = "Le mot de passe doit contenir au moins 6 caractères."
         else:
-            # Vérifier email unique dans Firebase
-            existing = user_get_by_email(email)
-            if existing:
-                error = "Cet email est déjà utilisé."
-            else:
-                pwd_hash = generate_password_hash(password)
-                colors   = ["#6B2FA0", "#00B4D8", "#E8002D", "#1B5E20", "#1565C0"]
-                color    = colors[hash(email) % len(colors)]
-                user_id  = user_create(nom, prenom, email, pwd_hash, telephone, color)
-                session["user_id"]    = user_id
-                session["user_nom"]   = nom
-                session["user_prenom"] = prenom
-                return redirect(url_for("dashboard"))
+            try:
+                # Vérifier email unique dans Firebase
+                existing = user_get_by_email(email)
+                if existing:
+                    error = "Cet email est déjà utilisé."
+                else:
+                    pwd_hash = generate_password_hash(password)
+                    colors   = ["#6B2FA0", "#00B4D8", "#E8002D", "#1B5E20", "#1565C0"]
+                    color    = colors[hash(email) % len(colors)]
+                    user_id  = user_create(nom, prenom, email, pwd_hash, telephone, color)
+                    session["user_id"]    = user_id
+                    session["user_nom"]   = nom
+                    session["user_prenom"] = prenom
+                    return redirect(url_for("dashboard"))
+            except Exception as e:
+                logger.error(f"[register] Erreur Firebase : {e}")
+                error = "Service temporairement indisponible. Réessayez dans quelques instants."
 
     return render_template("user_login.html", error=error, mode="register")
 
@@ -1044,7 +1081,16 @@ def logout():
 @app.route("/dashboard")
 @login_required
 def dashboard():
-    user = get_current_user()
+    try:
+        user = get_current_user()
+    except Exception as e:
+        logger.error(f"[dashboard] Erreur Firebase get_current_user : {e}")
+        # On utilise les données de session comme fallback (pas de déconnexion forcée)
+        user = {
+            "id":     session.get("user_id", ""),
+            "nom":    session.get("user_nom", ""),
+            "prenom": session.get("user_prenom", ""),
+        }
     if not user:
         session.clear()
         return redirect(url_for("login"))
@@ -1279,6 +1325,7 @@ def api_user_human_response():
     sess["is_unknown_problem"]       = False
     sess["stage"]                    = "initial"
     sess["pending_intent"]           = ""
+    sess["original_problem"]         = ""   # Fix TTS : effacer après réponse agent
     sess["last_transferred_problem"] = ""
 
     return jsonify({"success": True, "learned": learned})
@@ -1433,6 +1480,7 @@ def api_internal_agent_reply():
         sess["is_unknown_problem"]       = False
         sess["stage"]                    = "initial"
         sess["pending_intent"]           = ""
+        sess["original_problem"]         = ""   # Fix TTS : effacer au reset transfert
         sess["last_transferred_problem"] = ""
 
     # Mettre à jour le statut Firebase
@@ -1542,10 +1590,26 @@ def api_profile():
 def api_stats():
     try:
         stats = user_stats(session["user_id"])
+        # Ajouter les statistiques de satisfaction à partir des réclamations
+        try:
+            recs = reclamations_get_by_user(session["user_id"], limit=500)
+            rated  = [r for r in recs if (r.get("satisfaction_rating") or 0) > 0]
+            if rated:
+                avg_rating = round(sum(r["satisfaction_rating"] for r in rated) / len(rated), 1)
+            else:
+                avg_rating = 0.0
+            stats["satisfaction_avg"]   = avg_rating
+            stats["satisfaction_count"] = len(rated)
+        except Exception as _se:
+            logger.warning(f"[api_stats] Erreur satisfaction : {_se}")
+            stats["satisfaction_avg"]   = 0.0
+            stats["satisfaction_count"] = 0
         return jsonify(stats)
     except Exception as e:
         logger.error(f"[api_stats] Erreur Firebase : {e}", exc_info=True)
-        return jsonify({"total": 0, "resolues": 0, "transferees": 0, "en_cours": 0, "error": str(e)}), 500
+        return jsonify({"total": 0, "resolues": 0, "transferees": 0, "en_cours": 0,
+                        "satisfaction_avg": 0.0, "satisfaction_count": 0,
+                        "error": str(e)}), 500
 
 
 @app.route("/api/user/top_issues")
@@ -1902,6 +1966,32 @@ def api_check_capabilities():
     except ImportError:
         pass
     return jsonify({"stt": stt_ok, "tts": tts_ok})
+
+
+# ══════════════════════════════════════════════════════════
+#  GESTIONNAIRES D'ERREURS GLOBAUX
+# ══════════════════════════════════════════════════════════
+
+@app.errorhandler(500)
+def internal_error(e):
+    logger.error(f"[500] Erreur interne : {e}", exc_info=True)
+    # Si la requête attend du JSON → répondre en JSON
+    if request.is_json or request.path.startswith("/api/"):
+        return jsonify({"error": "Erreur interne du serveur", "detail": str(e)}), 500
+    # Sinon → page d'erreur simple
+    return render_template("user_login.html",
+                           error="Une erreur interne est survenue. Veuillez réessayer.",
+                           mode="login"), 500
+
+
+@app.errorhandler(Exception)
+def unhandled_exception(e):
+    logger.error(f"[Exception non gérée] {type(e).__name__}: {e}", exc_info=True)
+    if request.is_json or request.path.startswith("/api/"):
+        return jsonify({"error": "Erreur interne du serveur", "detail": str(e)}), 500
+    return render_template("user_login.html",
+                           error="Une erreur interne est survenue. Veuillez réessayer.",
+                           mode="login"), 500
 
 
 # ══════════════════════════════════════════════════════════

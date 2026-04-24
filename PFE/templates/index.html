@@ -1304,6 +1304,12 @@ body {
             <div class="kpi-sub">plus rapide enregistré</div>
           </div>
 
+          <div class="kpi-card orange">
+            <div class="kpi-label"><i class="fas fa-star"></i> Taux de satisfaction</div>
+            <div class="kpi-value"><span id="kpiSatisfaction">—</span><span class="kpi-percent" id="kpiSatisfactionPct"></span></div>
+            <div class="kpi-sub" id="kpiSatisfactionSub">note moyenne sur 5</div>
+          </div>
+
         </div>
 
         <!-- Charts -->
@@ -2214,6 +2220,21 @@ async function loadAdminStats() {
     document.getElementById('kpiMinDelay').textContent = d.min_response_str || '—';
     document.getElementById('kpiAvgDelaySub').textContent =
       (d.resolues_count ? `sur ${d.resolues_count} conversation(s) résolue(s)` : 'aucune conversation résolue');
+
+    // Taux de satisfaction
+    const ratedCount = d.rated_count || 0;
+    if (ratedCount > 0) {
+      const avgRating = (d.avg_rating || 0).toFixed(1);
+      const satRate   = (d.satisfaction_rate || 0);
+      document.getElementById('kpiSatisfaction').textContent    = avgRating + ' ★';
+      document.getElementById('kpiSatisfactionPct').textContent = satRate + '%';
+      document.getElementById('kpiSatisfactionSub').textContent =
+        `${satRate}% satisfaits (≥4★) — ${ratedCount} avis`;
+    } else {
+      document.getElementById('kpiSatisfaction').textContent    = '—';
+      document.getElementById('kpiSatisfactionPct').textContent = '';
+      document.getElementById('kpiSatisfactionSub').textContent = 'aucun avis reçu';
+    }
 
     renderStatutCharts(counts);
   } catch(e) {

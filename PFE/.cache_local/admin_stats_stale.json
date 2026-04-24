@@ -1,0 +1,1 @@
+{"total": 155, "counts": {"en_cours": 15, "resolue": 35, "transferee": 105, "fermee": 0}, "percentages": {"en_cours": 9.7, "resolue": 22.6, "transferee": 67.7, "fermee": 0.0}, "avg_response_sec": 77.1, "avg_response_str": "1 min 17s", "min_response_sec": 15.2, "min_response_str": "15 s", "resolues_count": 35, "satisfaction_rate": 50.0, "avg_rating": 3.0, "rated_count": 2}
