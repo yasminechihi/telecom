@@ -1384,26 +1384,92 @@ def api_mobile_chat():
                   "session_ended": False, "transferred": False,
                   "statut": "en_cours"}
 
-    bot_resp = result.get("bot_response", "")
+    bot_resp   = result.get("bot_response", "")
+    new_statut = result.get("statut", "en_cours")
 
     # Sauvegarder les messages dans Firebase
     if uid and conv_id:
         try:
             message_add(conv_id, uid, "user", text)
             message_add(conv_id, uid, "bot", bot_resp)
-            new_statut = result.get("statut", "en_cours")
-            sujet      = result.get("sujet") or ""
-            conversation_update(conv_id, statut=new_statut, sujet=sujet)
+            _upd = dict(statut=new_statut, sujet=result.get("sujet") or "")
+            if result.get("transferred"):
+                _upd["was_transferred"] = True
+            conversation_update(conv_id, **_upd)
         except Exception as e:
             logger.error(f"[api_mobile_chat] Firebase save error: {e}")
 
+    # ── Transfert vers agent humain → appel Asterisk (identique à /api/user/chat) ──
+    ami_called         = False
+    asterisk_available = False
+    ami_reason         = ""
+
+    if result.get("transferred"):
+        # get_current_user() lit session["user_id"] — déjà injecté ci-dessus
+        user_info = get_current_user() or {}
+        # Fallback : lire directement dans Firebase si session insuffisante
+        if not user_info and uid:
+            try:
+                user_info = user_get_by_id(uid) or {}
+            except Exception:
+                user_info = {}
+
+        phone     = (user_info.get("telephone") or "").strip()
+        u_name    = f"{user_info.get('prenom','')} {user_info.get('nom','')}".strip()
+        ticket_id = conv_id[:8] if conv_id else "mobile"
+
+        logger.info(
+            f"[Asterisk/mobile] Transfert — user={uid} phone='{phone}' name='{u_name}'"
+        )
+
+        _transfer_sess = user_conv_state.get(conv_id, {})
+        problem_text   = _build_tts_text(_transfer_sess)
+
+        # Stocker le problème dans Firebase (visible back-office)
+        raw_problem = _transfer_sess.get("last_transferred_problem", "") or problem_text
+        if raw_problem and conv_id:
+            try:
+                conversation_update(conv_id, last_problem=raw_problem)
+            except Exception as _cp_err:
+                logger.warning(f"[Asterisk/mobile] Echec last_problem : {_cp_err}")
+
+        if not phone:
+            ami_reason = "no_phone"
+            logger.warning(f"[Asterisk/mobile] Numéro manquant pour user {uid}")
+        else:
+            ami_result         = _asterisk_call(
+                caller_number=phone,
+                ticket_id=ticket_id,
+                user_name=u_name,
+                problem_text=problem_text,
+                session_id=conv_id,
+            )
+            ami_called         = ami_result.get("success", False)
+            asterisk_available = ami_called
+            if ami_called:
+                ami_reason = "ok"
+            else:
+                msg = ami_result.get("message", "").lower()
+                ami_reason = (
+                    "no_phone" if "manquant" in msg or "phone" in msg
+                    else "ami_down"
+                )
+            logger.info(f"[Asterisk/mobile] {ami_result.get('message', str(ami_result))}")
+
+        # Enregistrer l'état pour le polling call_status
+        if conv_id:
+            _call_state_mark_transferred(conv_id, ticket_id=conv_id)
+
     return jsonify({
-        "bot_response":    bot_resp,
-        "conversation_id": conv_id,
-        "conv_id":         conv_id,
-        "session_ended":   result.get("session_ended", False),
-        "transferred":     result.get("transferred", False),
-        "statut":          result.get("statut", "en_cours"),
+        "bot_response":       bot_resp,
+        "conversation_id":    conv_id,
+        "conv_id":            conv_id,
+        "session_ended":      result.get("session_ended", False),
+        "transferred":        result.get("transferred", False),
+        "ami_called":         ami_called,
+        "asterisk_available": asterisk_available,
+        "ami_reason":         ami_reason,
+        "statut":             new_statut,
     })
 
 
