@@ -481,6 +481,41 @@ app = Flask(__name__,
 app.secret_key = "tt_user_espace_2026"
 app.config["JSON_AS_ASCII"] = False
 
+# ── CORS — autorise l'application Flutter (web + mobile) ──
+def _is_allowed_origin(origin: str) -> bool:
+    """
+    Autorise tout localhost/127.0.0.1 quel que soit le port.
+    Flutter Web utilise un port aléatoire (ex: 65447, 51860…).
+    En production, remplace cette logique par une liste fixe.
+    """
+    if not origin:
+        return False
+    import re
+    return bool(re.match(r'https?://(localhost|127\.0\.0\.1)(:\d+)?$', origin))
+
+def _apply_cors(response_or_headers, origin: str):
+    if _is_allowed_origin(origin):
+        response_or_headers["Access-Control-Allow-Origin"]      = origin
+        response_or_headers["Access-Control-Allow-Credentials"] = "true"
+        response_or_headers["Access-Control-Allow-Methods"]     = "GET, POST, PUT, DELETE, OPTIONS"
+        response_or_headers["Access-Control-Allow-Headers"]     = "Content-Type, Authorization, Cookie, X-Requested-With, X-User-ID"
+
+@app.before_request
+def _handle_preflight():
+    """
+    Intercepte TOUS les préflight OPTIONS avant le routage Flask.
+    Sans ça, les POST JSON de Flutter Web déclenchent un 405 OPTIONS.
+    """
+    if request.method == "OPTIONS":
+        resp = app.make_default_options_response()
+        _apply_cors(resp.headers, request.headers.get("Origin", ""))
+        return resp
+
+@app.after_request
+def _add_cors_headers(response):
+    _apply_cors(response.headers, request.headers.get("Origin", ""))
+    return response
+
 # ── Chargement modules bot ────────────────────────────────
 logger.info("Chargement modules bot...")
 ml_predictor = MLPredictor(Config)
@@ -1108,7 +1143,364 @@ def logout():
     # Nettoyer les états de conversation
     user_id = session.get("user_id")
     session.clear()
+    # Support JSON (Flutter mobile) + redirect (web)
+    if request.is_json or request.headers.get("Accept") == "application/json":
+        return jsonify({"success": True})
     return redirect(url_for("login"))
+
+
+# ══════════════════════════════════════════════════════════
+#  API MOBILE — Authentification JSON (Flutter)
+#  Routes séparées qui acceptent application/json
+#  et renvoient du JSON (pas de redirect HTML)
+# ══════════════════════════════════════════════════════════
+
+@app.route("/api/mobile/login", methods=["POST"])
+def api_mobile_login():
+    """Connexion pour l'application Flutter (JSON)."""
+    data     = request.get_json(silent=True) or {}
+    email    = data.get("email", "").strip().lower()
+    password = data.get("password", "")
+
+    if not email or not password:
+        return jsonify({"success": False, "error": "Email et mot de passe requis."}), 400
+
+    try:
+        user = user_get_by_email(email)
+    except Exception as e:
+        logger.error(f"[api_mobile_login] Firebase error: {e}")
+        return jsonify({"success": False, "error": "Service temporairement indisponible."}), 503
+
+    if not user or not check_password_hash(user.get("password_hash", ""), password):
+        return jsonify({"success": False, "error": "Email ou mot de passe incorrect."}), 401
+
+    session["user_id"]     = user["id"]
+    session["user_nom"]    = user.get("nom", "")
+    session["user_prenom"] = user.get("prenom", "")
+    try:
+        user_update_last_login(user["id"])
+    except Exception:
+        pass
+
+    return jsonify({
+        "success": True,
+        "user": {
+            "uid":       user["id"],
+            "email":     user.get("email", email),
+            "nom":       user.get("nom", ""),
+            "prenom":    user.get("prenom", ""),
+            "telephone": user.get("telephone", ""),
+        }
+    })
+
+
+@app.route("/api/mobile/register", methods=["POST"])
+def api_mobile_register():
+    """Inscription pour l'application Flutter (JSON)."""
+    data      = request.get_json(silent=True) or {}
+    nom       = data.get("nom", "").strip()
+    prenom    = data.get("prenom", "").strip()
+    email     = data.get("email", "").strip().lower()
+    telephone = data.get("telephone", "").strip()
+    password  = data.get("password", "")
+
+    if not all([nom, prenom, email, telephone, password]):
+        return jsonify({"success": False, "error": "Tous les champs sont obligatoires."}), 400
+    if len(password) < 6:
+        return jsonify({"success": False, "error": "Le mot de passe doit contenir au moins 6 caractères."}), 400
+
+    try:
+        existing = user_get_by_email(email)
+        if existing:
+            return jsonify({"success": False, "error": "Cet email est déjà utilisé."}), 409
+
+        pwd_hash = generate_password_hash(password)
+        colors   = ["#6B2FA0", "#00B4D8", "#E8002D", "#1B5E20", "#1565C0"]
+        color    = colors[hash(email) % len(colors)]
+        user_id  = user_create(nom, prenom, email, pwd_hash, telephone, color)
+    except Exception as e:
+        logger.error(f"[api_mobile_register] Firebase error: {e}")
+        return jsonify({"success": False, "error": "Service temporairement indisponible."}), 503
+
+    session["user_id"]     = user_id
+    session["user_nom"]    = nom
+    session["user_prenom"] = prenom
+
+    return jsonify({
+        "success": True,
+        "user": {
+            "uid":       user_id,
+            "email":     email,
+            "nom":       nom,
+            "prenom":    prenom,
+            "telephone": telephone,
+        }
+    })
+
+
+# ══════════════════════════════════════════════════════════
+#  API MOBILE — Données utilisateur (sans session Flask)
+#  Toutes ces routes acceptent {"user_id": "..."} en JSON
+#  ou le header X-User-ID.  Pas de cookie requis.
+# ══════════════════════════════════════════════════════════
+
+def _mobile_user_id() -> str | None:
+    """Récupère le user_id depuis le JSON body ou le header X-User-ID."""
+    uid = request.headers.get("X-User-ID", "").strip()
+    if not uid:
+        data = request.get_json(silent=True) or {}
+        uid = data.get("user_id", "").strip()
+    return uid or None
+
+
+@app.route("/api/mobile/profile", methods=["GET", "POST"])
+def api_mobile_profile():
+    uid = _mobile_user_id()
+    if not uid:
+        return jsonify({"error": "user_id requis"}), 400
+    try:
+        user = user_get_by_id(uid)
+        if not user:
+            return jsonify({"error": "Utilisateur introuvable"}), 404
+        return jsonify({
+            "uid":       uid,
+            "email":     user.get("email", ""),
+            "nom":       user.get("nom", ""),
+            "prenom":    user.get("prenom", ""),
+            "telephone": user.get("telephone", ""),
+            "created_at": str(user.get("created_at", "")),
+        })
+    except Exception as e:
+        logger.error(f"[api_mobile_profile] {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/mobile/stats", methods=["GET", "POST"])
+def api_mobile_stats():
+    uid = _mobile_user_id()
+    if not uid:
+        return jsonify({"error": "user_id requis"}), 400
+    try:
+        s = user_stats(uid)
+        return jsonify({
+            "total_conversations":      s.get("total", 0),
+            "resolved_conversations":   s.get("resolues", 0),
+            "transferred_conversations": s.get("transferees", 0),
+            "en_cours":                 s.get("en_cours", 0),
+            "avg_rating":               s.get("avg_rating", 0),
+        })
+    except Exception as e:
+        logger.error(f"[api_mobile_stats] {e}")
+        return jsonify({"total_conversations": 0, "resolved_conversations": 0,
+                        "transferred_conversations": 0, "avg_rating": 0}), 200
+
+
+@app.route("/api/mobile/history", methods=["GET", "POST"])
+def api_mobile_history():
+    uid = _mobile_user_id()
+    if not uid:
+        return jsonify({"error": "user_id requis"}), 400
+    try:
+        reclamations = reclamations_get_by_user(uid, limit=50)
+        conversations = []
+        for r in reclamations:
+            conversations.append({
+                "conv_id":       r.get("reclamation_id", ""),
+                "first_message": r.get("sujet") or r.get("apercu", ""),
+                "last_message":  r.get("apercu", ""),
+                "message_count": r.get("nb_messages", 0),
+                "status":        r.get("statut", "en_cours"),
+                "created_at":    r.get("created_at", ""),
+                "rating":        r.get("satisfaction_rating", 0),
+            })
+        return jsonify(conversations)
+    except Exception as e:
+        logger.error(f"[api_mobile_history] {e}")
+        return jsonify([]), 200
+
+
+@app.route("/api/mobile/conversation/<conv_id>", methods=["GET", "POST"])
+def api_mobile_conversation(conv_id):
+    uid = _mobile_user_id()
+    try:
+        msgs = messages_get_by_conversation(conv_id)
+        result = []
+        for m in msgs:
+            result.append({
+                "role":      m.get("role", "bot"),
+                "text":      m.get("content", ""),
+                "timestamp": str(m.get("created_at", "")),
+            })
+        return jsonify({"conv_id": conv_id, "messages": result})
+    except Exception as e:
+        logger.error(f"[api_mobile_conversation] {e}")
+        return jsonify({"conv_id": conv_id, "messages": []}), 200
+
+
+@app.route("/api/mobile/new_conversation", methods=["POST"])
+def api_mobile_new_conversation():
+    uid = _mobile_user_id()
+    if not uid:
+        return jsonify({"error": "user_id requis"}), 400
+    try:
+        conv_id = conversation_create(uid, sujet="Chat mobile", canal="mobile")
+        return jsonify({"conv_session_id": conv_id, "conv_id": conv_id})
+    except Exception as e:
+        logger.error(f"[api_mobile_new_conversation] {e}")
+        import uuid as _uuid
+        fallback = str(_uuid.uuid4())
+        return jsonify({"conv_session_id": fallback, "conv_id": fallback})
+
+
+@app.route("/api/mobile/chat", methods=["POST"])
+def api_mobile_chat():
+    """Chat mobile — identique à /api/user/chat mais sans login_required."""
+    data    = request.get_json(silent=True) or {}
+    uid     = data.get("user_id", "").strip() or request.headers.get("X-User-ID", "")
+    text    = data.get("text", "").strip()
+    conv_id = data.get("conv_session_id", "").strip()
+
+    if not text:
+        return jsonify({"error": "text requis"}), 400
+
+    # Créer la conversation Firebase si elle n'existe pas encore
+    if not conv_id and uid:
+        try:
+            conv_id = conversation_create(uid, sujet="Chat mobile", canal="mobile")
+        except Exception as _ce:
+            import uuid as _u
+            conv_id = str(_u.uuid4())
+            logger.warning(f"[api_mobile_chat] conv_create fallback uuid: {_ce}")
+
+    # Injecter user_id dans la session Flask temporairement
+    if uid:
+        session["user_id"] = uid
+
+    try:
+        result = process_user_message(conv_id, text)
+    except Exception as e:
+        logger.error(f"[api_mobile_chat] process_user_message error: {e}")
+        result = {"bot_response": Config.NOT_UNDERSTOOD_MSG,
+                  "session_ended": False, "transferred": False,
+                  "statut": "en_cours"}
+
+    bot_resp = result.get("bot_response", "")
+
+    # Sauvegarder les messages dans Firebase
+    if uid and conv_id:
+        try:
+            message_add(conv_id, uid, "user", text)
+            message_add(conv_id, uid, "bot", bot_resp)
+            new_statut = result.get("statut", "en_cours")
+            sujet      = result.get("sujet") or ""
+            conversation_update(conv_id, statut=new_statut, sujet=sujet)
+        except Exception as e:
+            logger.error(f"[api_mobile_chat] Firebase save error: {e}")
+
+    return jsonify({
+        "bot_response":    bot_resp,
+        "conversation_id": conv_id,
+        "conv_id":         conv_id,
+        "session_ended":   result.get("session_ended", False),
+        "transferred":     result.get("transferred", False),
+        "statut":          result.get("statut", "en_cours"),
+    })
+
+
+@app.route("/api/mobile/top_issues", methods=["GET", "POST"])
+def api_mobile_top_issues():
+    """Principaux problèmes du client — utilisé pour le graphique camembert Flutter."""
+    uid = _mobile_user_id()
+    if not uid:
+        return jsonify({"issues": [], "total": 0}), 200
+    try:
+        reclamations = reclamations_get_by_user(uid, limit=500)
+        counts = {}
+        for r in reclamations:
+            label = (r.get("sujet") or "").strip()
+            if not label or label == "—":
+                label = (r.get("service_type") or "").strip()
+            if not label or label == "—":
+                label = "Autre"
+            label = label[:40]
+            counts[label] = counts.get(label, 0) + 1
+        issues = [{"label": k, "count": v} for k, v in counts.items()]
+        issues.sort(key=lambda x: x["count"], reverse=True)
+        return jsonify({"issues": issues[:6], "total": len(reclamations)})
+    except Exception as e:
+        logger.error(f"[api_mobile_top_issues] {e}")
+        return jsonify({"issues": [], "total": 0}), 200
+
+
+@app.route("/api/mobile/rate_conversation", methods=["POST"])
+def api_mobile_rate_conversation():
+    data    = request.get_json(silent=True) or {}
+    conv_id = data.get("conv_id", "").strip()
+    rating  = data.get("rating", 0)
+    if conv_id:
+        try:
+            conversation_rate(conv_id, int(rating))
+        except Exception as e:
+            logger.error(f"[api_mobile_rate] {e}")
+    return jsonify({"success": True})
+
+
+@app.route("/api/mobile/call_status/<conv_id>", methods=["GET", "POST"])
+def api_mobile_call_status(conv_id):
+    """
+    Équivalent mobile de /api/user/call_status — sans @login_required.
+    Retourne l'état du transfert vers agent humain :
+      - transferred   : True si la conv a été transférée
+      - agent_hung_up : True dès que l'agent a raccroché
+      - agent_response: Transcription de la réponse de l'agent (si dispo)
+      - seconds_since : Secondes écoulées depuis le transfert
+      - statut        : Statut courant de la conversation Firebase
+    """
+    import time as _t
+    uid = _mobile_user_id()
+    try:
+        conv = conversation_get(conv_id)
+        if not conv:
+            return jsonify({"ok": False, "error": "Conversation introuvable"}), 404
+
+        # Vérification optionnelle : si uid connu, la conv doit lui appartenir
+        if uid and conv.get("user_id") and conv.get("user_id") != uid:
+            return jsonify({"ok": False, "error": "Accès refusé"}), 403
+
+        conv_statut = (conv.get("statut") or "").strip()
+        st = _call_states.get(conv_id)
+
+        # Pas d'état en mémoire (ex: redémarrage serveur) — fallback via Firestore
+        if not st:
+            was_transferred = bool(conv.get("was_transferred")) or conv_statut == "transferee"
+            agent_hung_up   = was_transferred and conv_statut == "resolue"
+            return jsonify({
+                "ok":             True,
+                "transferred":    was_transferred,
+                "agent_hung_up":  agent_hung_up,
+                "seconds_since":  0,
+                "statut":         conv_statut,
+                "agent_response": "",
+            })
+
+        # Fallback : conv passée à "resolue" → l'agent a raccroché
+        if st.get("transferred") and not st.get("agent_hung_up") and conv_statut == "resolue":
+            _call_state_mark_hung_up(conv_id, "")
+            st = _call_states.get(conv_id, st)
+
+        seconds_since = int(_t.time() - (st.get("transferred_at") or _t.time()))
+        return jsonify({
+            "ok":             True,
+            "transferred":    bool(st.get("transferred")),
+            "agent_hung_up":  bool(st.get("agent_hung_up")),
+            "seconds_since":  seconds_since,
+            "statut":         conv_statut,
+            "agent_response": st.get("agent_response", "") if st.get("agent_hung_up") else "",
+        })
+
+    except Exception as e:
+        logger.error(f"[api_mobile_call_status] {e}", exc_info=True)
+        return jsonify({"ok": False, "error": str(e)}), 500
 
 
 # ══════════════════════════════════════════════════════════

@@ -339,8 +339,10 @@ def conversation_create(user_id: str,
                         titre: str = "Nouvelle conversation",
                         statut: str = "en_cours",
                         sujet: str = "",
-                        service_type: str = "") -> str:
-    """Crée une conversation et retourne son document ID Firebase."""
+                        service_type: str = "",
+                        canal: str = "web") -> str:
+    """Crée une conversation et retourne son document ID Firebase.
+    canal : 'web' (interface Flask) ou 'mobile' (app Flutter)."""
     db = get_db()
     now = _now()
     doc_ref = db.collection("conversations").document()
@@ -350,6 +352,7 @@ def conversation_create(user_id: str,
         "statut":       statut,
         "sujet":        sujet,
         "service_type": service_type,
+        "canal":        canal,
         "created_at":   now,
         "updated_at":   now,
     })

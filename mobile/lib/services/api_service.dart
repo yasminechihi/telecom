@@ -1,0 +1,338 @@
+import 'dart:convert';
+import 'package:http/http.dart' as http;
+import 'package:shared_preferences/shared_preferences.dart';
+import '../models/user_model.dart';
+
+// ════════════════════════════════════════════════════════════
+//  Service API — se connecte au backend Flask (user_app.py)
+//  Port 5001 — même base de données Firebase Firestore
+//
+//  Stratégie : toutes les routes /api/mobile/* acceptent
+//  {"user_id": "..."} dans le body JSON → pas besoin de cookie.
+// ════════════════════════════════════════════════════════════
+
+class ApiService {
+  // ── URL de base ───────────────────────────────────────────
+  static const String baseUrl = 'http://localhost:5001';
+
+  // ── Clés SharedPreferences ────────────────────────────────
+  static const String _keyUserId     = 'user_id';
+  static const String _keyUserEmail  = 'user_email';
+  static const String _keyUserNom    = 'user_nom';
+  static const String _keyUserPrenom = 'user_prenom';
+  static const String _keyUserTel    = 'user_telephone';
+
+  // ── Singleton ─────────────────────────────────────────────
+  static final ApiService _instance = ApiService._internal();
+  factory ApiService() => _instance;
+  ApiService._internal();
+
+  String? _userId;
+
+  Map<String, String> get _headers => {
+    'Content-Type': 'application/json',
+    'Accept': 'application/json',
+    if (_userId != null) 'X-User-ID': _userId!,
+  };
+
+  /// Body de base qui inclut toujours le user_id
+  Map<String, dynamic> _body([Map<String, dynamic>? extra]) {
+    final b = <String, dynamic>{};
+    if (_userId != null) b['user_id'] = _userId!;
+    if (extra != null) b.addAll(extra);
+    return b;
+  }
+
+  // ════════════════════════════════════════════════════════
+  //  AUTHENTIFICATION
+  // ════════════════════════════════════════════════════════
+
+  /// Connexion — renvoie null si succès, message d'erreur sinon
+  Future<String?> login(String email, String password) async {
+    try {
+      final resp = await http.post(
+        Uri.parse('$baseUrl/api/mobile/login'),
+        headers: _headers,
+        body: jsonEncode({'email': email, 'password': password}),
+      ).timeout(const Duration(seconds: 10));
+
+      final data = jsonDecode(resp.body) as Map<String, dynamic>;
+
+      if (resp.statusCode == 200 && data['success'] == true) {
+        final user = data['user'] as Map<String, dynamic>? ?? {};
+        _userId = user['uid']?.toString() ?? '';
+        await _saveUser(user, email);
+        return null; // succès
+      } else {
+        return data['error'] ?? 'Email ou mot de passe incorrect.';
+      }
+    } catch (_) {
+      return 'Serveur non disponible. Lancez user_app.py (port 5001).';
+    }
+  }
+
+  /// Inscription
+  Future<String?> register({
+    required String email,
+    required String password,
+    required String nom,
+    required String prenom,
+    required String telephone,
+  }) async {
+    try {
+      final resp = await http.post(
+        Uri.parse('$baseUrl/api/mobile/register'),
+        headers: _headers,
+        body: jsonEncode({
+          'email': email, 'password': password,
+          'nom': nom, 'prenom': prenom, 'telephone': telephone,
+        }),
+      ).timeout(const Duration(seconds: 10));
+
+      final data = jsonDecode(resp.body) as Map<String, dynamic>;
+
+      if (resp.statusCode == 200 && data['success'] == true) {
+        final user = data['user'] as Map<String, dynamic>? ?? {};
+        _userId = user['uid']?.toString() ?? '';
+        await _saveUser(user, email);
+        return null;
+      } else {
+        return data['error'] ?? "Erreur lors de l'inscription";
+      }
+    } catch (_) {
+      return 'Serveur non disponible. Lancez user_app.py (port 5001).';
+    }
+  }
+
+  /// Déconnexion
+  Future<void> logout() async {
+    _userId = null;
+    await _clearUser();
+  }
+
+  // ════════════════════════════════════════════════════════
+  //  PROFIL & STATS  — routes /api/mobile/* (sans session)
+  // ════════════════════════════════════════════════════════
+
+  Future<UserModel?> getProfile() async {
+    if (_userId == null) return getCachedUser();
+    try {
+      final resp = await http.post(
+        Uri.parse('$baseUrl/api/mobile/profile'),
+        headers: _headers,
+        body: jsonEncode(_body()),
+      ).timeout(const Duration(seconds: 10));
+
+      if (resp.statusCode == 200) {
+        return UserModel.fromJson(jsonDecode(resp.body) as Map<String, dynamic>);
+      }
+    } catch (_) {}
+    return getCachedUser();
+  }
+
+  Future<UserStats?> getStats() async {
+    if (_userId == null) return null;
+    try {
+      final resp = await http.post(
+        Uri.parse('$baseUrl/api/mobile/stats'),
+        headers: _headers,
+        body: jsonEncode(_body()),
+      ).timeout(const Duration(seconds: 10));
+
+      if (resp.statusCode == 200) {
+        return UserStats.fromJson(jsonDecode(resp.body) as Map<String, dynamic>);
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  // ════════════════════════════════════════════════════════
+  //  HISTORIQUE DES CONVERSATIONS
+  // ════════════════════════════════════════════════════════
+
+  Future<List<TopIssue>> getTopIssues() async {
+    if (_userId == null) return [];
+    try {
+      final resp = await http.post(
+        Uri.parse('$baseUrl/api/mobile/top_issues'),
+        headers: _headers,
+        body: jsonEncode(_body()),
+      ).timeout(const Duration(seconds: 10));
+
+      if (resp.statusCode == 200) {
+        final data = jsonDecode(resp.body) as Map<String, dynamic>;
+        final list = data['issues'] as List? ?? [];
+        return list.map((e) => TopIssue.fromJson(e as Map<String, dynamic>)).toList();
+      }
+    } catch (_) {}
+    return [];
+  }
+
+  Future<List<ConversationSummary>> getHistory() async {
+    if (_userId == null) return [];
+    try {
+      final resp = await http.post(
+        Uri.parse('$baseUrl/api/mobile/history'),
+        headers: _headers,
+        body: jsonEncode(_body()),
+      ).timeout(const Duration(seconds: 15));
+
+      if (resp.statusCode == 200) {
+        final data = jsonDecode(resp.body);
+        final list = data is List ? data : (data['conversations'] as List? ?? []);
+        return list
+            .map((e) => ConversationSummary.fromJson(e as Map<String, dynamic>))
+            .toList();
+      }
+    } catch (_) {}
+    return [];
+  }
+
+  Future<List<ChatMessage>> getConversationDetail(String convId) async {
+    try {
+      final resp = await http.post(
+        Uri.parse('$baseUrl/api/mobile/conversation/$convId'),
+        headers: _headers,
+        body: jsonEncode(_body()),
+      ).timeout(const Duration(seconds: 10));
+
+      if (resp.statusCode == 200) {
+        final data = jsonDecode(resp.body) as Map<String, dynamic>;
+        final messages = data['messages'] as List? ?? [];
+        return messages
+            .map((e) => ChatMessage.fromJson(e as Map<String, dynamic>))
+            .toList();
+      }
+    } catch (_) {}
+    return [];
+  }
+
+  // ════════════════════════════════════════════════════════
+  //  CHAT
+  // ════════════════════════════════════════════════════════
+
+  Future<Map<String, dynamic>?> sendMessage({
+    required String convSessionId,
+    required String text,
+  }) async {
+    try {
+      final resp = await http.post(
+        Uri.parse('$baseUrl/api/mobile/chat'),
+        headers: _headers,
+        body: jsonEncode(_body({
+          'conv_session_id': convSessionId,
+          'text': text,
+        })),
+      ).timeout(const Duration(seconds: 20));
+
+      if (resp.statusCode == 200) {
+        return jsonDecode(resp.body) as Map<String, dynamic>;
+      }
+
+      // Erreur HTTP : renvoie un message lisible plutôt que null
+      String errMsg;
+      try {
+        final errData = jsonDecode(resp.body) as Map<String, dynamic>;
+        errMsg = errData['error']?.toString() ?? 'Erreur serveur (${resp.statusCode})';
+      } catch (_) {
+        errMsg = 'Erreur serveur (${resp.statusCode})';
+      }
+      return {'bot_response': errMsg, 'error': true};
+    } on Exception catch (e) {
+      final msg = e.toString().contains('TimeoutException')
+          ? 'Le serveur ne répond pas. Vérifiez que user_app.py est lancé (port 5001).'
+          : 'Connexion impossible. Vérifiez votre réseau et que user_app.py est lancé.';
+      return {'bot_response': msg, 'error': true};
+    }
+  }
+
+  /// Vérifie si l'agent a raccroché après un transfert.
+  /// Retourne null en cas d'erreur réseau.
+  Future<Map<String, dynamic>?> getCallStatus(String convId) async {
+    if (convId.isEmpty) return null;
+    try {
+      final resp = await http.post(
+        Uri.parse('$baseUrl/api/mobile/call_status/$convId'),
+        headers: _headers,
+        body: jsonEncode(_body()),
+      ).timeout(const Duration(seconds: 8));
+      if (resp.statusCode == 200) {
+        return jsonDecode(resp.body) as Map<String, dynamic>;
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  Future<String?> newConversation() async {
+    try {
+      final resp = await http.post(
+        Uri.parse('$baseUrl/api/mobile/new_conversation'),
+        headers: _headers,
+        body: jsonEncode(_body()),
+      ).timeout(const Duration(seconds: 10));
+
+      if (resp.statusCode == 200) {
+        final data = jsonDecode(resp.body) as Map<String, dynamic>;
+        return data['conv_session_id']?.toString() ?? data['conv_id']?.toString();
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  Future<void> rateConversation(String convId, int rating) async {
+    try {
+      await http.post(
+        Uri.parse('$baseUrl/api/mobile/rate_conversation'),
+        headers: _headers,
+        body: jsonEncode(_body({'conv_id': convId, 'rating': rating})),
+      ).timeout(const Duration(seconds: 10));
+    } catch (_) {}
+  }
+
+  // ════════════════════════════════════════════════════════
+  //  STOCKAGE LOCAL (SharedPreferences)
+  // ════════════════════════════════════════════════════════
+
+  Future<void> _saveUser(Map<String, dynamic> user, String email) async {
+    final prefs = await SharedPreferences.getInstance();
+    final uid = user['uid']?.toString() ?? '';
+    await prefs.setString(_keyUserId,     uid);
+    await prefs.setString(_keyUserEmail,  user['email']?.toString() ?? email);
+    await prefs.setString(_keyUserNom,    user['nom']?.toString() ?? '');
+    await prefs.setString(_keyUserPrenom, user['prenom']?.toString() ?? '');
+    await prefs.setString(_keyUserTel,    user['telephone']?.toString() ?? '');
+    _userId = uid;
+  }
+
+  Future<void> _clearUser() async {
+    final prefs = await SharedPreferences.getInstance();
+    for (final k in [_keyUserId, _keyUserEmail, _keyUserNom, _keyUserPrenom, _keyUserTel]) {
+      await prefs.remove(k);
+    }
+  }
+
+  Future<bool> isLoggedIn() async {
+    final prefs = await SharedPreferences.getInstance();
+    final uid = prefs.getString(_keyUserId);
+    if (uid != null && uid.isNotEmpty) {
+      _userId = uid;
+      return true;
+    }
+    return false;
+  }
+
+  Future<UserModel?> getCachedUser() async {
+    final prefs = await SharedPreferences.getInstance();
+    final email = prefs.getString(_keyUserEmail);
+    if (email == null) return null;
+    final uid = prefs.getString(_keyUserId) ?? '';
+    if (_userId == null && uid.isNotEmpty) _userId = uid;
+    return UserModel(
+      uid:       uid,
+      email:     email,
+      nom:       prefs.getString(_keyUserNom) ?? '',
+      prenom:    prefs.getString(_keyUserPrenom) ?? '',
+      telephone: prefs.getString(_keyUserTel) ?? '',
+    );
+  }
+}

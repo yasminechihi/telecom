@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <base href="$FLUTTER_BASE_HREF">
+  <meta charset="UTF-8">
+  <meta content="IE=Edge" http-equiv="X-UA-Compatible">
+  <meta name="description" content="Mon Espace TT — Tunisie Telecom">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black">
+  <meta name="apple-mobile-web-app-title" content="Mon Espace TT">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+
+  <link rel="apple-touch-icon" href="icons/Icon-192.png">
+  <link rel="icon" type="image/png" href="favicon.png"/>
+
+  <title>Mon Espace TT — Tunisie Telecom</title>
+  <link rel="manifest" href="manifest.json">
+
+  <style>
+    /* ── Écran de chargement Flutter ─────────────────── */
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      background: #3D1484;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      font-family: 'Cairo', sans-serif;
+    }
+
+    #loading-screen {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 20px;
+    }
+
+    .logo-box {
+      width: 90px;
+      height: 90px;
+      background: white;
+      border-radius: 22px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      box-shadow: 0 12px 30px rgba(0,0,0,0.25);
+      font-size: 36px;
+      font-weight: 900;
+      color: #5B1FBE;
+    }
+
+    .app-title {
+      color: white;
+      font-size: 22px;
+      font-weight: 800;
+      text-align: center;
+    }
+
+    .spinner {
+      width: 36px;
+      height: 36px;
+      border: 3px solid rgba(255,255,255,0.2);
+      border-top-color: #00B4D8;
+      border-radius: 50%;
+      animation: spin 0.9s linear infinite;
+    }
+
+    @keyframes spin { to { transform: rotate(360deg); } }
+  </style>
+</head>
+<body>
+
+  <!-- Écran visible pendant le chargement Flutter -->
+  <div id="loading-screen">
+    <div class="logo-box">TT</div>
+    <div class="app-title">Mon Espace TT</div>
+    <div class="spinner"></div>
+  </div>
+
+  <script>
+    window.addEventListener('flutter-first-frame', function() {
+      var el = document.getElementById('loading-screen');
+      if (el) el.style.display = 'none';
+    });
+  </script>
+
+  <script src="flutter_bootstrap.js" async></script>
+</body>
+</html>

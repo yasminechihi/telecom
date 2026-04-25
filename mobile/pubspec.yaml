@@ -1,0 +1,51 @@
+name: tt_user_app
+description: Mon Espace TT — Application mobile Tunisie Telecom
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.0.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # HTTP — appels vers le backend Flask
+  http: ^1.2.0
+
+  # Stockage local (session / token)
+  shared_preferences: ^2.2.2
+
+  # Navigation
+  go_router: ^13.2.0
+
+  # Icônes Material
+  cupertino_icons: ^1.0.6
+
+  # Affichage de dates
+  intl: ^0.19.0
+
+  # Animations
+  flutter_animate: ^4.5.0
+
+  # Indicateur de chargement élégant
+  shimmer: ^3.0.0
+
+  # Graphiques (camembert dashboard)
+  fl_chart: ^0.66.2
+
+  # Reconnaissance vocale (mode vocal)
+  speech_to_text: ^6.6.2
+
+  # Synthèse vocale (TTS)
+  flutter_tts: ^3.8.5
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^3.0.0
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/logo_tt.png
