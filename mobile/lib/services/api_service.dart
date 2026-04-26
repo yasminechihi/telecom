@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:typed_data';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import '../models/user_model.dart';
@@ -13,7 +14,12 @@ import '../models/user_model.dart';
 
 class ApiService {
   // ── URL de base ───────────────────────────────────────────
-  static const String baseUrl = 'http://localhost:5001';
+  // IMPORTANT : Sur téléphone physique, remplace l'IP ci-dessous
+  // par l'adresse IPv4 de ton PC sur le même réseau WiFi.
+  // Windows : ipconfig → "Adresse IPv4"  (ex: 192.168.1.15)
+  // Mac/Linux : ip a / ifconfig
+  // Émulateur Android uniquement → utilise 10.0.2.2
+  static const String baseUrl = 'http://192.168.1.224:5001';
 
   // ── Clés SharedPreferences ────────────────────────────────
   static const String _keyUserId     = 'user_id';
@@ -287,6 +293,28 @@ class ApiService {
         body: jsonEncode(_body({'conv_id': convId, 'rating': rating})),
       ).timeout(const Duration(seconds: 10));
     } catch (_) {}
+  }
+
+  // ════════════════════════════════════════════════════════
+  //  TTS — edge-tts backend (ar-TN-ReemNeural)
+  //  Même voix que l'interface web
+  // ════════════════════════════════════════════════════════
+
+  /// Envoie le texte au backend edge-tts et retourne les bytes MP3.
+  /// Retourne null si le backend est inaccessible (fallback flutter_tts).
+  Future<Uint8List?> getTtsAudio(String text) async {
+    try {
+      final resp = await http.post(
+        Uri.parse('$baseUrl/api/user/tts'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({'text': text}),
+      ).timeout(const Duration(seconds: 15));
+
+      if (resp.statusCode == 200) {
+        return resp.bodyBytes;
+      }
+    } catch (_) {}
+    return null;
   }
 
   // ════════════════════════════════════════════════════════

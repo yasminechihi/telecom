@@ -393,7 +393,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
       decoration: const BoxDecoration(
         gradient: LinearGradient(colors: [TTColors.purpleDark, Color(0xFF2D1270)]),
       ),
-      child: const Text('© 2024 Tunisie Telecom — Tous droits réservés',
+      child: const Text('© 2026 Tunisie Telecom — Tous droits réservés',
         textAlign: TextAlign.center,
         style: TextStyle(color: Colors.white60, fontSize: 12, fontFamily: 'Cairo')),
     );

@@ -484,14 +484,22 @@ app.config["JSON_AS_ASCII"] = False
 # ── CORS — autorise l'application Flutter (web + mobile) ──
 def _is_allowed_origin(origin: str) -> bool:
     """
-    Autorise tout localhost/127.0.0.1 quel que soit le port.
-    Flutter Web utilise un port aléatoire (ex: 65447, 51860…).
+    Autorise localhost/127.0.0.1 (Flutter Web) et les IPs du réseau local
+    (192.168.x.x, 10.x.x.x, 172.16-31.x.x) pour les tests sur téléphone physique.
     En production, remplace cette logique par une liste fixe.
     """
     if not origin:
-        return False
+        return True   # Flutter mobile n'envoie pas d'Origin → toujours autorisé
     import re
-    return bool(re.match(r'https?://(localhost|127\.0\.0\.1)(:\d+)?$', origin))
+    return bool(re.match(
+        r'https?://'
+        r'(localhost|127\.0\.0\.1'
+        r'|192\.168\.\d{1,3}\.\d{1,3}'
+        r'|10\.\d{1,3}\.\d{1,3}\.\d{1,3}'
+        r'|172\.(1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}'
+        r')(:\d+)?$',
+        origin
+    ))
 
 def _apply_cors(response_or_headers, origin: str):
     if _is_allowed_origin(origin):

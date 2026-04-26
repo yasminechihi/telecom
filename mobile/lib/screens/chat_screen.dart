@@ -1,8 +1,10 @@
 import 'dart:async';
+import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:speech_to_text/speech_to_text.dart';
 import 'package:flutter_tts/flutter_tts.dart';
+import 'package:audioplayers/audioplayers.dart';
 import '../theme/app_theme.dart';
 import '../services/api_service.dart';
 import '../models/user_model.dart';
@@ -33,8 +35,9 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
   final _focusNode  = FocusNode();
 
   // ── STT / TTS ────────────────────────────────────────────
-  final _speech = SpeechToText();
-  final _tts    = FlutterTts();
+  final _speech      = SpeechToText();
+  final _tts         = FlutterTts();          // fallback si backend indisponible
+  final _audioPlayer = AudioPlayer();         // lecture audio edge-tts (backend)
 
   bool _speechAvailable = false;
   bool _isListening     = false;
@@ -83,6 +86,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
     _inputCtrl.dispose();
     _focusNode.dispose();
     _tts.stop();
+    _audioPlayer.dispose();
     super.dispose();
   }
 
@@ -107,8 +111,9 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
 
   // ── Initialisation TTS ───────────────────────────────────
   Future<void> _initTts() async {
+    // Configurer flutter_tts uniquement comme fallback (si backend inaccessible)
     try {
-      await _tts.setLanguage('ar');
+      await _tts.setLanguage('ar-SA');
       await _tts.setSpeechRate(0.5);
       await _tts.setVolume(1.0);
     } catch (_) {}
@@ -241,11 +246,27 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
     _sendMessage(text);
   }
 
+  /// Lit le texte via edge-tts backend (ar-TN-ReemNeural — même voix que le web).
+  /// Fallback automatique sur flutter_tts si le backend est inaccessible.
   Future<void> _speakText(String text) async {
     try {
+      // 1. Arrêter toute lecture en cours
+      await _audioPlayer.stop();
       await _tts.stop();
+
+      // 2. Essayer le backend edge-tts (voix tunisienne)
+      final Uint8List? audioBytes = await _api.getTtsAudio(text);
+      if (audioBytes != null && audioBytes.isNotEmpty) {
+        await _audioPlayer.play(BytesSource(audioBytes));
+        return;
+      }
+
+      // 3. Fallback : flutter_tts (voix Android intégrée)
       await _tts.speak(text);
-    } catch (_) {}
+    } catch (_) {
+      // Dernier recours silencieux
+      try { await _tts.speak(text); } catch (_) {}
+    }
   }
 
   // ── Toast transfert ──────────────────────────────────────
@@ -304,12 +325,12 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
     if (_convSessionId.isNotEmpty) {
       await _api.rateConversation(_convSessionId, rating);
     }
-    if (mounted) _addBotMessage('شكراً على تقييمك! يسعدنا خدمتك. 🌟');
+    if (mounted) _addBotMessage('شكراً على تقييمك! يسعدنا خدمتك.');
   }
 
   void _newConversation() async {
     _pollingTimer?.cancel();
-    if (_ttsEnabled) await _tts.stop();
+    if (_ttsEnabled) { await _audioPlayer.stop(); await _tts.stop(); }
     final id = await _api.newConversation();
     setState(() {
       _convSessionId = id ?? '';
@@ -380,14 +401,19 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
             icon: const Icon(Icons.arrow_back_rounded, color: TTColors.purple),
             onPressed: () => context.canPop() ? context.pop() : context.go('/dashboard'),
           ),
-          // Avatar bot
+          // Avatar bot — logo TT (comme l'interface web)
           Container(
             width: 40, height: 40,
             decoration: BoxDecoration(
-              gradient: const LinearGradient(colors: [TTColors.purple, TTColors.teal]),
+              color: Colors.white,
               borderRadius: BorderRadius.circular(10),
+              border: Border.all(color: TTColors.border),
+              boxShadow: [BoxShadow(color: TTColors.purple.withOpacity(0.15), blurRadius: 6)],
             ),
-            child: const Icon(Icons.smart_toy_rounded, color: Colors.white, size: 22),
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(9),
+              child: Image.asset('assets/logo_tt.png', fit: BoxFit.contain),
+            ),
           ),
           const SizedBox(width: 10),
           Expanded(
@@ -413,11 +439,14 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
           _buildTtsToggle(),
           const SizedBox(width: 4),
           // ── Nouveau chat ─────────────────────────────
-          TextButton.icon(
-            onPressed: _newConversation,
-            icon: const Icon(Icons.add_rounded, size: 14, color: TTColors.purple),
-            label: const Text('Nouveau', style: TextStyle(fontSize: 11, color: TTColors.purple, fontFamily: 'Cairo', fontWeight: FontWeight.w600)),
-            style: TextButton.styleFrom(padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6)),
+          Tooltip(
+            message: 'Nouveau chat',
+            child: IconButton(
+              onPressed: _newConversation,
+              icon: const Icon(Icons.add_circle_outline_rounded, size: 22, color: TTColors.purple),
+              padding: const EdgeInsets.all(4),
+              constraints: const BoxConstraints(),
+            ),
           ),
         ],
       ),
@@ -435,7 +464,10 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
           _modeBtn(Icons.mic_rounded, 'Vocal', _voiceMode, () {
             if (!_speechAvailable) {
               ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(content: Text('Microphone non disponible dans ce navigateur', style: TextStyle(fontFamily: 'Cairo')), backgroundColor: TTColors.red),
+                const SnackBar(
+                  content: Text('Autorisez le microphone dans les paramètres de l\'app', style: TextStyle(fontFamily: 'Cairo')),
+                  backgroundColor: TTColors.red,
+                ),
               );
               return;
             }
@@ -446,29 +478,21 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
     );
   }
 
+  // Toggle mode — icônes uniquement pour économiser la largeur du header
   Widget _modeBtn(IconData icon, String label, bool active, VoidCallback onTap) {
+    final bool isVocal = label == 'Vocal';
     return GestureDetector(
       onTap: onTap,
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 200),
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+        width: 32, height: 28,
         decoration: BoxDecoration(
-          color: active ? (label == 'Vocal' ? const Color(0xFFFEE2E2) : TTColors.white) : Colors.transparent,
-          borderRadius: BorderRadius.circular(16),
+          color: active ? (isVocal ? const Color(0xFFFEE2E2) : TTColors.white) : Colors.transparent,
+          borderRadius: BorderRadius.circular(14),
           boxShadow: active ? [const BoxShadow(color: Color(0x14000000), blurRadius: 4)] : [],
         ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(icon, size: 13,
-              color: active ? (label == 'Vocal' ? const Color(0xFFDC2626) : TTColors.purple) : TTColors.muted),
-            const SizedBox(width: 4),
-            Text(label, style: TextStyle(
-              fontSize: 11, fontWeight: FontWeight.w600, fontFamily: 'Cairo',
-              color: active ? (label == 'Vocal' ? const Color(0xFFDC2626) : TTColors.purple) : TTColors.muted,
-            )),
-          ],
-        ),
+        child: Icon(icon, size: 15,
+          color: active ? (isVocal ? const Color(0xFFDC2626) : TTColors.purple) : TTColors.muted),
       ),
     );
   }
@@ -477,7 +501,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
     return GestureDetector(
       onTap: () {
         setState(() => _ttsEnabled = !_ttsEnabled);
-        if (!_ttsEnabled) _tts.stop();
+        if (!_ttsEnabled) { _audioPlayer.stop(); _tts.stop(); }
       },
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 200),
@@ -580,17 +604,17 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
         bottom: 16,
       ),
       decoration: BoxDecoration(
-        gradient: isUser
-            ? null
-            : const LinearGradient(colors: [TTColors.purple, TTColors.teal]),
-        color: isUser ? TTColors.purpleBg : null,
+        color: isUser ? TTColors.purpleBg : Colors.white,
         borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: isUser ? TTColors.purple.withOpacity(0.2) : TTColors.border),
+        boxShadow: [BoxShadow(color: TTColors.purple.withOpacity(0.10), blurRadius: 4)],
       ),
-      child: Icon(
-        isUser ? Icons.person_rounded : Icons.smart_toy_rounded,
-        color: isUser ? TTColors.purple : Colors.white,
-        size: 16,
-      ),
+      child: isUser
+          ? const Icon(Icons.person_rounded, color: TTColors.purple, size: 16)
+          : ClipRRect(
+              borderRadius: BorderRadius.circular(7),
+              child: Image.asset('assets/logo_tt.png', fit: BoxFit.contain),
+            ),
     );
   }
 
@@ -673,51 +697,45 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
         border: Border(top: BorderSide(color: TTColors.border)),
         boxShadow: [BoxShadow(color: Color(0x0A000000), blurRadius: 10, offset: Offset(0, -2))],
       ),
-      child: Column(children: [
-        Row(children: [
-          Expanded(
-            child: TextField(
-              controller: _inputCtrl,
-              focusNode: _focusNode,
-              textDirection: TextDirection.rtl,
-              style: const TextStyle(fontFamily: 'Cairo', fontSize: 14, color: TTColors.text),
-              decoration: InputDecoration(
-                hintText: 'اكتب رسالتك هنا… ابدأ بـ عسلامة',
-                hintStyle: const TextStyle(color: TTColors.muted, fontFamily: 'Cairo', fontSize: 13),
-                border: OutlineInputBorder(borderRadius: BorderRadius.circular(24), borderSide: const BorderSide(color: TTColors.border)),
-                enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(24), borderSide: const BorderSide(color: TTColors.border)),
-                focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(24), borderSide: const BorderSide(color: TTColors.purple, width: 2)),
-                contentPadding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
-                filled: true, fillColor: TTColors.gray,
-              ),
-              onSubmitted: (_) => _sendMessage(),
-              maxLines: 3, minLines: 1,
+      child: Row(children: [
+        Expanded(
+          child: TextField(
+            controller: _inputCtrl,
+            focusNode: _focusNode,
+            textDirection: TextDirection.rtl,
+            style: const TextStyle(fontFamily: 'Cairo', fontSize: 14, color: TTColors.text),
+            decoration: InputDecoration(
+              hintText: 'اكتب رسالتك هنا… ابدأ بـ عسلامة',
+              hintStyle: const TextStyle(color: TTColors.muted, fontFamily: 'Cairo', fontSize: 13),
+              border: OutlineInputBorder(borderRadius: BorderRadius.circular(24), borderSide: const BorderSide(color: TTColors.border)),
+              enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(24), borderSide: const BorderSide(color: TTColors.border)),
+              focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(24), borderSide: const BorderSide(color: TTColors.purple, width: 2)),
+              contentPadding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
+              filled: true, fillColor: TTColors.gray,
+            ),
+            onSubmitted: (_) => _sendMessage(),
+            maxLines: 4, minLines: 1,
+            textInputAction: TextInputAction.send,
+          ),
+        ),
+        const SizedBox(width: 10),
+        GestureDetector(
+          onTap: _botTyping ? null : _sendMessage,
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 200),
+            width: 48, height: 48,
+            decoration: BoxDecoration(
+              gradient: _botTyping
+                  ? const LinearGradient(colors: [TTColors.muted, TTColors.muted])
+                  : const LinearGradient(colors: [TTColors.purple, TTColors.purpleLight]),
+              borderRadius: BorderRadius.circular(24),
+              boxShadow: _botTyping ? [] : [BoxShadow(color: TTColors.purple.withOpacity(0.4), blurRadius: 10, offset: const Offset(0, 3))],
+            ),
+            child: Icon(
+              _botTyping ? Icons.hourglass_empty_rounded : Icons.send_rounded,
+              color: Colors.white, size: 20,
             ),
           ),
-          const SizedBox(width: 10),
-          GestureDetector(
-            onTap: _botTyping ? null : _sendMessage,
-            child: AnimatedContainer(
-              duration: const Duration(milliseconds: 200),
-              width: 48, height: 48,
-              decoration: BoxDecoration(
-                gradient: _botTyping
-                    ? const LinearGradient(colors: [TTColors.muted, TTColors.muted])
-                    : const LinearGradient(colors: [TTColors.purple, TTColors.purpleLight]),
-                borderRadius: BorderRadius.circular(24),
-                boxShadow: _botTyping ? [] : [BoxShadow(color: TTColors.purple.withOpacity(0.4), blurRadius: 10, offset: const Offset(0, 3))],
-              ),
-              child: Icon(
-                _botTyping ? Icons.hourglass_empty_rounded : Icons.send_rounded,
-                color: Colors.white, size: 20,
-              ),
-            ),
-          ),
-        ]),
-        const SizedBox(height: 4),
-        Text('Entrée pour envoyer  ·  Shift+Entrée pour saut de ligne',
-          style: const TextStyle(fontSize: 10, color: TTColors.muted, fontFamily: 'Cairo'),
-          textAlign: TextAlign.center,
         ),
       ]),
     );

@@ -35,17 +35,31 @@ dependencies:
   fl_chart: ^0.66.2
 
   # Reconnaissance vocale (mode vocal)
-  speech_to_text: ^6.6.2
+  speech_to_text: ^7.0.0
 
-  # Synthèse vocale (TTS)
+  # Synthèse vocale (TTS) — fallback local uniquement
   flutter_tts: ^3.8.5
+
+  # Lecture audio — pour jouer la voix edge-tts du backend (ar-TN-ReemNeural)
+  audioplayers: ^6.0.0
 
 dev_dependencies:
   flutter_test:
     sdk: flutter
   flutter_lints: ^3.0.0
+  # Générateur d'icônes de lancement
+  flutter_launcher_icons: ^0.14.1
+
+flutter_launcher_icons:
+  android: true
+  ios: false
+  image_path: "assets/icon/icon.png"
+  min_sdk_android: 21
+  adaptive_icon_background: "#6B21A8"   # fond violet TT
+  adaptive_icon_foreground: "assets/icon/icon.png"
 
 flutter:
   uses-material-design: true
   assets:
     - assets/logo_tt.png
+    - assets/icon/icon.png
