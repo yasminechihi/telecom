@@ -745,7 +745,7 @@ def conversations_get_all_recent(limit: int = 30) -> list:
 
     OPTIMISATION QUOTA :
       - Ne lit QUE les documents conversations (pas les messages) → N lectures seulement
-      - TTL cache en mémoire : 10 minutes (vs 12s refresh de l'admin)
+      - TTL cache en mémoire : 30 secondes (vs 12s refresh de l'admin)
       - Stale in-memory + disque : si Firebase KO → données périmées plutôt que liste vide
     """
     cache_key = f"conv_all_recent_{limit}"
@@ -820,8 +820,8 @@ def conversations_get_all_recent(limit: int = 30) -> list:
                 "last_role":    conv.get("last_role") or "",
             })
 
-        # Cache mémoire 10 minutes + stale store + disque
-        _cache.set(cache_key, result, ttl_seconds=600)
+        # Cache mémoire 30 secondes + stale store + disque
+        _cache.set(cache_key, result, ttl_seconds=30)
         _disk_write("conversations_stale.json", result)
         return result
 
@@ -842,7 +842,7 @@ def conversations_get_all_recent(limit: int = 30) -> list:
                 f"stale disque ({len(disk)} conversations)."
             )
             # Remettre en mémoire pour les prochains appels
-            _cache.set(cache_key, disk, ttl_seconds=600)
+            _cache.set(cache_key, disk, ttl_seconds=30)
             return disk
         logger.error(f"[conversations_get_all_recent] Firebase KO, aucun cache : {e}")
         return []
