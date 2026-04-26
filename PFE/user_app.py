@@ -1312,10 +1312,19 @@ def api_mobile_history():
         reclamations = reclamations_get_by_user(uid, limit=50)
         conversations = []
         for r in reclamations:
+            # Priorité titre : sujet (intent NLU) → apercu (1er msg) → vide
+            sujet  = (r.get("sujet") or "").strip()
+            apercu = (r.get("apercu") or r.get("last_msg") or "").strip()
+
+            # Exclure les sujets génériques créés automatiquement
+            if sujet in ("Chat mobile", "Chat web", "—", "-"):
+                sujet = ""
+
+            titre = sujet or apercu or ""
             conversations.append({
                 "conv_id":       r.get("reclamation_id", ""),
-                "first_message": r.get("sujet") or r.get("apercu", ""),
-                "last_message":  r.get("apercu", ""),
+                "first_message": titre,
+                "last_message":  apercu,
                 "message_count": r.get("nb_messages", 0),
                 "status":        r.get("statut", "en_cours"),
                 "created_at":    r.get("created_at", ""),
@@ -1400,7 +1409,12 @@ def api_mobile_chat():
         try:
             message_add(conv_id, uid, "user", text)
             message_add(conv_id, uid, "bot", bot_resp)
-            _upd = dict(statut=new_statut, sujet=result.get("sujet") or "")
+            _upd = dict(statut=new_statut)
+            # Ne mettre à jour sujet QUE si le NLU a détecté un intent non vide
+            # → évite d'écraser le vrai sujet par "" à chaque message
+            new_sujet = (result.get("sujet") or "").strip()
+            if new_sujet:
+                _upd["sujet"] = new_sujet
             if result.get("transferred"):
                 _upd["was_transferred"] = True
             conversation_update(conv_id, **_upd)

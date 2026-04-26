@@ -871,7 +871,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
           const SizedBox(width: 12),
           Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
             Text(
-              conv.firstMessage.isNotEmpty ? conv.firstMessage : 'Réclamation',
+              conv.firstMessage.isNotEmpty ? conv.firstMessage : 'Conversation sans titre',
               style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: TTColors.text, fontFamily: 'Cairo'),
               maxLines: 1, overflow: TextOverflow.ellipsis,
             ),

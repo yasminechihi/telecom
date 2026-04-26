@@ -6,7 +6,7 @@
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT"/>
 
     <application
-        android:label="tt_user_app"
+        android:label="Tunisie Telecom"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">
         <activity
