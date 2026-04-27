@@ -2506,7 +2506,11 @@ function reclamationCardHTML(r) {
     transferee: '<i class="fas fa-headset"></i> Transférée',
     fermee: '<i class="fas fa-lock"></i> Fermée',
   };
-  const sujet = r.sujet || 'Réclamation générale';
+  // Afficher l'aperçu (premier message) si le sujet est vide ou "—"
+  const _sujetRaw = (r.sujet || '').trim();
+  const sujet = (_sujetRaw && _sujetRaw !== '—')
+    ? _sujetRaw
+    : ((r.apercu || '').trim() || 'Réclamation générale');
   const apercu = r.apercu
     ? (r.apercu.length > 100 ? r.apercu.substring(0, 100) + '…' : r.apercu)
     : 'Pas d\'aperçu disponible';
@@ -2563,8 +2567,10 @@ async function openDetail(convId) {
     const conv = data.conversation;
     const msgs = data.messages;
 
+    const _s = (conv.sujet || '').trim();
+    const _modalSujet = (_s && _s !== '—') ? _s : ((conv.apercu || '').trim() || 'Générale');
     document.getElementById('modalTitle').textContent =
-      'Réclamation #' + convId + ' — ' + (conv.sujet || 'Générale');
+      'Réclamation #' + convId + ' — ' + _modalSujet;
 
     const body = document.getElementById('modalBody');
     body.innerHTML = msgs.map(m => {
