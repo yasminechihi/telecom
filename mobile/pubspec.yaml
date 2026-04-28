@@ -34,7 +34,7 @@ dependencies:
   # Graphiques (camembert dashboard)
   fl_chart: ^0.66.2
 
-  # Reconnaissance vocale (mode vocal)
+  # Reconnaissance vocale (mode vocal) — fallback on-device
   speech_to_text: ^7.0.0
 
   # Synthèse vocale (TTS) — fallback local uniquement
@@ -42,6 +42,12 @@ dependencies:
 
   # Lecture audio — pour jouer la voix edge-tts du backend (ar-TN-ReemNeural)
   audioplayers: ^6.0.0
+
+  # Enregistrement audio — pour envoyer l'audio au backend Whisper (meilleur STT darija)
+  record: ^5.1.2
+
+  # Répertoire temporaire pour fichiers audio
+  path_provider: ^2.1.4
 
 dev_dependencies:
   flutter_test:

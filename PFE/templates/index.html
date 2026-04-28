@@ -1340,8 +1340,19 @@ body {
 <div class="overlay" id="humanModal">
   <div class="modal">
     <h3><i class="fas fa-headset"></i> وكيل بشري — Agent Humain</h3>
-    <p>لم يتمكن الوكيل الآلي من حل هذه المشكلة. أدخل ردك أدناه — سيتم تعلمه تلقائياً.</p>
+    <p>لم يتمكن الوكيل الآلي من حل هذه المشكلة. أدخل ردك أدناه أو استخدم الميكروفون — سيتم تعلمه تلقائياً.</p>
     <textarea id="humanResponseText" placeholder="اكتب الرد هنا بالدارجة التونسية..." dir="rtl"></textarea>
+    <!-- Barre STT agent : bip + enregistrement voix de l'agent -->
+    <div id="agentSttBar" style="display:flex;align-items:center;gap:10px;margin-top:8px;">
+      <button id="btnAgentMic" onclick="toggleAgentRecording()"
+              style="display:flex;align-items:center;gap:6px;padding:8px 14px;
+                     background:var(--tt-purple);color:#fff;border:none;border-radius:8px;
+                     cursor:pointer;font-size:0.85rem;transition:background 0.2s;">
+        <i id="agentMicIcon" class="fas fa-microphone"></i>
+        <span id="agentMicLabel">تسجيل صوت الوكيل</span>
+      </button>
+      <span id="agentSttStatus" style="font-size:0.78rem;color:var(--tt-muted);direction:rtl;"></span>
+    </div>
     <div class="modal-actions">
       <button class="btn-secondary" onclick="closeHumanModal()">إلغاء</button>
       <button class="btn-primary" onclick="submitHumanResponse()">
@@ -1775,6 +1786,104 @@ async function sendVoice() {
 ═══════════════════════════════════════════════════════════ */
 function openHumanModal() { document.getElementById('humanModal').classList.add('show'); document.getElementById('humanResponseText').focus(); }
 function closeHumanModal() { document.getElementById('humanModal').classList.remove('show'); }
+
+/* ═══════════════════════════════════════════════════════════
+   AGENT MIC — Enregistrement voix de l'agent + STT optimisé
+   Flow : Bip sonore → Enregistrement → /api/voice_agent → Transcription → Textarea
+═══════════════════════════════════════════════════════════ */
+let _agentRecorder   = null;
+let _agentChunks     = [];
+let _agentRecording  = false;
+
+/** Génère un bip court (440 Hz, 200 ms) pour signaler que l'enregistrement commence. */
+function _playAgentBip() {
+  try {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.type = 'sine';
+    osc.frequency.value = 880;   // ton plus aigu = signal de démarrage
+    gain.gain.setValueAtTime(0.25, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.25);
+    osc.start(ctx.currentTime);
+    osc.stop(ctx.currentTime + 0.25);
+  } catch(e) { /* AudioContext non disponible → silencieux */ }
+}
+
+async function toggleAgentRecording() {
+  const btn    = document.getElementById('btnAgentMic');
+  const icon   = document.getElementById('agentMicIcon');
+  const label  = document.getElementById('agentMicLabel');
+  const status = document.getElementById('agentSttStatus');
+
+  if (!_agentRecording) {
+    // ── Démarrage : bip + enregistrement ─────────────────────
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      _playAgentBip();                             // bip de départ
+
+      _agentChunks  = [];
+      _agentRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm' });
+      _agentRecorder.ondataavailable = e => _agentChunks.push(e.data);
+      _agentRecorder.onstop = _sendAgentVoice;
+      _agentRecorder.start();
+      _agentRecording = true;
+
+      btn.style.background   = '#dc2626';   // rouge = en cours
+      icon.className         = 'fas fa-stop';
+      label.textContent      = 'إيقاف التسجيل';
+      status.textContent     = '🔴 جارٍ التسجيل...';
+    } catch(e) {
+      showToast('لا يمكن الوصول للميكروفون: ' + e.message);
+    }
+  } else {
+    // ── Arrêt ─────────────────────────────────────────────────
+    _agentRecorder.stop();
+    _agentRecorder.stream.getTracks().forEach(t => t.stop());
+    _agentRecording = false;
+
+    btn.style.background = 'var(--tt-purple)';
+    icon.className       = 'fas fa-spinner fa-spin';
+    label.textContent    = 'جارٍ التحويل...';
+    status.textContent   = '⏳ Whisper يحلل الصوت...';
+  }
+}
+
+async function _sendAgentVoice() {
+  const status = document.getElementById('agentSttStatus');
+  const icon   = document.getElementById('agentMicIcon');
+  const label  = document.getElementById('agentMicLabel');
+
+  const blob = new Blob(_agentChunks, { type: 'audio/webm' });
+  const form = new FormData();
+  form.append('audio', blob, 'agent_response.webm');
+
+  try {
+    // Appel au STT spécialisé agent (prompt optimisé pour réponses telecom)
+    const r = await fetch('/api/voice_agent', { method: 'POST', body: form });
+    const d = await r.json();
+
+    if (d.transcript) {
+      // Injecter la transcription dans la textarea (l'agent peut corriger avant d'envoyer)
+      const ta = document.getElementById('humanResponseText');
+      ta.value = d.transcript;
+      ta.focus();
+      status.textContent = '✅ تم التحويل — يمكنك التعديل قبل الإرسال';
+      showToast('🎙️ تم التحويل الصوتي بنجاح');
+    } else {
+      status.textContent = '⚠️ لم يُكتشف كلام — أعد المحاولة';
+      showToast('⚠️ لم يُكتشف كلام');
+    }
+  } catch(e) {
+    status.textContent = '❌ خطأ في التحويل';
+    console.error('Agent STT error:', e);
+  } finally {
+    icon.className  = 'fas fa-microphone';
+    label.textContent = 'تسجيل صوت الوكيل';
+  }
+}
 
 async function submitHumanResponse() {
   const text = document.getElementById('humanResponseText').value.trim();

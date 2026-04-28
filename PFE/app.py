@@ -103,6 +103,114 @@ sessions = {}
 # tant que le serveur tourne. Oublié dès que le serveur est redémarré.
 _global_learned_responses = []   # liste de {problem_text, response_text, embedding}
 
+# ════════════════════════════════════════════════════════════
+#  Helpers NLU / Localisation — portés depuis user_app.py
+# ════════════════════════════════════════════════════════════
+
+def _norm_intent_key(s: str) -> str:
+    """Normalise une clé d'intent : ة→ه, variantes alef→ا, espaces normalisés."""
+    s = re.sub(r'\s+', ' ', s).strip()
+    s = s.replace('ة', 'ه').replace('أ', 'ا').replace('إ', 'ا').replace('آ', 'ا')
+    return s
+
+# ── Wilayas tunisiennes pour détection dans les réponses RAG ──────────────────
+_WILAYA_RAW_DETECT = sorted([
+    "سيدي بوزيد", "بن عروس",  "القيروان", "القصرين",
+    "المنستير",   "المهدية",  "أريانة",   "اريانة",
+    "جندوبة",     "بنزرت",    "تطاوين",   "صفاقس",
+    "مدنين",      "سليانة",   "قفصة",     "سوسة",
+    "الكاف",      "منوبة",    "قابس",     "توزر",
+    "زغوان",      "قصرين",    "نابل",     "باجة",
+    "قبلي",
+], key=len, reverse=True)
+
+_WILAYA_DETECT_RE = re.compile(
+    "(" + "|".join(re.escape(w) for w in _WILAYA_RAW_DETECT) + ")"
+)
+
+def _response_has_wilaya(text: str) -> bool:
+    """Retourne True si la réponse RAG contient un nom de wilaya hardcodé."""
+    return bool(text and _WILAYA_DETECT_RE.search(text))
+
+def _extract_wilaya_from_text(text: str) -> str:
+    """Détecte une wilaya directement dans le texte utilisateur (regex fallback)."""
+    if not text:
+        return ""
+    m = _WILAYA_DETECT_RE.search(text)
+    return m.group(0) if m else ""
+
+def _extract_delegation_from_text(text: str) -> str:
+    """
+    Extrait la معتمدية depuis le texte.
+    1. Pattern 'في X' où X n'est pas un nom de wilaya connu.
+    2. Fallback direct : vérifie si le texte (ou un token) est une معتمدية connue
+       dans DELEGATION_WILAYA_MAP — couvre le cas où l'user répond juste "الحمامات".
+    """
+    if not text:
+        return ""
+    # ── Passe 1 : pattern "في X" ─────────────────────────────────────────────
+    candidates = re.findall(r'في\s+([\u0600-\u06FF\s\-]{2,30}?)(?:\s*[،,\.\!؟]|$)', text)
+    for cand in candidates:
+        cand = cand.strip()
+        if cand and not _WILAYA_DETECT_RE.fullmatch(cand):
+            return cand
+    # ── Passe 2 : lookup direct dans DELEGATION_WILAYA_MAP ───────────────────
+    text_clean = text.strip()
+    if text_clean in DELEGATION_WILAYA_MAP and not _WILAYA_DETECT_RE.fullmatch(text_clean):
+        return text_clean
+    for token in text_clean.split():
+        token = token.strip()
+        if token in DELEGATION_WILAYA_MAP and not _WILAYA_DETECT_RE.fullmatch(token):
+            return token
+    return ""
+
+# ── Intents sensibles à la localisation ───────────────────────────────────────
+def _needs_location_intent(intent: str) -> bool:
+    """True si l'intent nécessite une localisation (wilaya + délégation)."""
+    if not intent:
+        return False
+    loc_intents = getattr(Config, "LOCATION_DEPENDENT_INTENTS", set())
+    intent_norm = _norm_intent_key(intent)
+    return intent_norm in {_norm_intent_key(i) for i in loc_intents}
+
+def _needs_location(entities: dict, intent: str = "") -> bool:
+    """True si l'intent nécessite une localisation ET ni wilaya ni délégation ne sont connues."""
+    if not _needs_location_intent(intent):
+        return False
+    if not entities:
+        return True
+    return not bool(entities.get("wilaya", "")) and not bool(entities.get("delegation", ""))
+
+# ── Intents qui ne déclenchent jamais de transfert ────────────────────────────
+_NO_TRANSFER_INTENTS_NORM: frozenset = frozenset(
+    _norm_intent_key(k) for k in {
+        "استفسار عن التغطية",
+        "استفسار عن التغطيه",
+    }
+)
+
+def _is_no_transfer_intent(intent: str) -> bool:
+    return bool(intent and _norm_intent_key(intent.strip()) in _NO_TRANSFER_INTENTS_NORM)
+
+# ── Regex numéro de demande ────────────────────────────────────────────────────
+_ASK_NUMBER_RE      = re.compile(r'[اأ]عطيني\s*(الرقم|رقم)', re.UNICODE)
+_CALLBACK_NUMBER_RE = re.compile(r'خلّ?[يا][لن]ي\s*رقمك', re.UNICODE)
+
+# ── Intents qui nécessitent TOUJOURS le numéro de demande avant réponse ───────
+_ASK_NUMBER_INTENTS_NORM: frozenset = frozenset(
+    _norm_intent_key(k) for k in {
+        "مشكلة في الدفع",    "مشكله في الدفع",
+        "اعتراض على الفاتورة", "اعتراض على الفاتوره",
+        "انقطاع الانترنات",  "انقطاع الانترنت",
+        "تأخير في التركيب",  "تاخير في التركيب",
+    }
+)
+
+def _is_ask_number_intent(intent: str) -> bool:
+    """True si cet intent doit TOUJOURS passer par la demande du numéro de demande."""
+    return bool(intent and _norm_intent_key(intent.strip()) in _ASK_NUMBER_INTENTS_NORM)
+
+
 def get_session(sid: str) -> dict:
     if sid not in sessions:
         sessions[sid] = {
@@ -365,8 +473,8 @@ def chat():
     ml_conf      = nlu_result.get("confidence", 0)
     service_type = nlu_result.get("entities", {}).get("service_type", "")
 
-    # Mettre à jour les entités collectées
-    _update_entities(sess, nlu_result)
+    # Mettre à jour les entités collectées (+ fallback regex depuis le texte)
+    _update_entities(sess, nlu_result, user_text)
 
     # ══════════════════════════════════════════════════════════
     #  DIALOGUE EN 2 ÉTAPES (fidèle au dataset)
@@ -374,28 +482,6 @@ def chat():
 
     # ── ÉTAPE 1 : Première plainte → poser une QUESTION ──────
     if stage == "initial":
-        # ── Apprentissage éphémère : vérifier d'abord si ce problème a déjà été
-        # résolu par un agent humain DANS CETTE SESSION ──────────────────────────
-        _session_resp = _find_session_learned_response(sess, user_text)
-        if _session_resp:
-            bot_resp = _localize_response(_session_resp, sess.get("collected_entities"))
-            sess["history"].append(("bot", bot_resp))
-            sess["solution_given"] = True
-            logger.info(f"[{sid}] Réponse éphémère (apprentissage session) utilisée")
-            return jsonify({
-                "bot_response":     bot_resp,
-                "transferred":      False,
-                "session_ended":    False,
-                "learned_response": True,
-                "analysis":         _build_analysis(
-                    nlu_result,
-                    {"confidence": 1.0, "escalate": False,
-                     "issue_type": intent, "service_type": service_type,
-                     "action": "تعلم من وكيل بشري"},
-                    collected_entities=sess.get("collected_entities"),
-                ),
-            })
-
         # Chercher la question dans le dataset via similarité sémantique pure
         clari = response_eng.find_clarification_question(
             user_text, nlu_intent=intent, nlu_service=service_type
@@ -419,22 +505,29 @@ def chat():
 
         if clari_ok:
             bot_resp = response_eng._strip_emojis(clari["question"])
+            _ents_clari = sess.get("collected_entities", {})
 
-            # Si la délégation n'est pas encore connue → la demander
-            # en complément de la question de clarification (un seul tour)
-            if _needs_delegation(sess.get("collected_entities")):
-                w = sess["collected_entities"].get("wilaya", "")
-                bot_resp += "  " + Config.DELEGATION_QUESTION.format(wilaya=w)
+            # Combiner clarification + question de localisation dans un seul message
+            if _needs_location_intent(intent):
+                if _needs_delegation(_ents_clari):
+                    # Wilaya connue, délégation manquante
+                    bot_resp += "  " + _build_delegation_question(_ents_clari)
+                    sess["location_in_clari"] = "delegation"
+                elif _needs_location(_ents_clari, intent):
+                    # Ni wilaya ni délégation
+                    bot_resp += "  " + Config.LOCATION_QUESTION
+                    sess["location_in_clari"] = "full"
+            elif _needs_delegation(_ents_clari):
+                # Intent non listé dans LOCATION_DEPENDENT_INTENTS mais wilaya mentionnée
+                # → compléter avec la délégation (essentiel pour analyse NLU et réponses RAG)
+                bot_resp += "  " + _build_delegation_question(_ents_clari)
+                sess["location_in_clari"] = "delegation"
 
-            # "عندك رقم المطلب؟" = demande si l'user A le numéro → clarifying
-            # "اعطيني رقم المطلب" = demande à l'user de FOURNIR le numéro → waiting
             sess["stage"] = "clarifying"
 
-            # CRUCIAL : on stocke l'intent du RECORD trouvé (fiable à 100%)
-            # et NON l'intent NLU (TF-IDF, souvent faux sur le darija mixte)
             record_intent = clari.get("intent") or intent
             sess["pending_intent"]   = record_intent
-            sess["original_problem"] = user_text   # Sauvegarder le problème original
+            sess["original_problem"] = user_text
 
             sess["history"].append(("bot", bot_resp))
 
@@ -516,26 +609,91 @@ def chat():
                                                 unknown_problem=True),
             })
 
-        # Seuil NLU bas mais question de clarification trouvée avec confiance suffisante
-        # (clari_conf >= 0.50 mais ml_conf < 0.35) → tenter réponse directe avec seuil strict
+        # Seuil NLU bas → passer direct à l'étape 2 avec seuil strict
         logger.info(
             f"[{sid}] ÉTAPE 1 ignorée (NLU bas) "
-            f"(clari_conf={clari['confidence']:.3f} seuil={CLARI_MIN_CONF} | "
-            f"nlu_conf={ml_conf:.2f} seuil={NLU_MIN_CONF_CLARI}) "
-            f"→ passage direct ÉTAPE 2 (seuil strict RAG appliqué)"
+            f"(clari_conf={clari['confidence']:.3f} | nlu_conf={ml_conf:.2f}) "
+            f"→ passage direct ÉTAPE 2"
         )
-        sess["stage"]          = "responding"
-        sess["pending_intent"] = intent
+        sess["stage"]            = "responding"
+        sess["pending_intent"]   = intent
+        sess["original_problem"] = user_text
+        # Vérifier la localisation avant d'aller au RAG
+        if _needs_location(sess.get("collected_entities"), intent):
+            bot_resp = Config.LOCATION_QUESTION
+            sess["stage"] = "waiting_for_location"
+            sess["history"].append(("bot", bot_resp))
+            return jsonify({"bot_response": bot_resp, "transferred": False,
+                            "session_ended": False, "analysis": {}})
+        elif _needs_delegation(sess.get("collected_entities")):
+            # Tous intents — wilaya connue mais délégation manquante
+            bot_resp = _build_delegation_question(sess.get("collected_entities"))
+            sess["stage"] = "waiting_for_delegation"
+            sess["history"].append(("bot", bot_resp))
+            return jsonify({"bot_response": bot_resp, "transferred": False,
+                            "session_ended": False, "analysis": {}})
 
     # ── ÉTAPE 2 : Réponse finale (après clarification) ───────
-    # active_intent = intent du RECORD (fiable) ou NLU si pas de record
     active_intent = sess.get("pending_intent") or intent
 
-    # ── Détection numéro de demande : user fournit le numéro après que le bot l'a demandé ──
-    # قرار الذكاء الاصطناعي → تحويل لوكيل بشري immédiat
+    # ── Numéro de rappel reçu → clore la conversation ────────
+    if stage == "waiting_for_callback_number":
+        bot_resp = Config.THANKS_MESSAGE
+        sess["history"].append(("bot", bot_resp))
+        sess["stage"]          = "waiting_greeting"
+        sess["pending_intent"] = ""
+        sess["solution_given"] = True
+        return jsonify({"bot_response": bot_resp, "transferred": False,
+                        "session_ended": True, "analysis": {}})
+
+    # ── Localisation attendue ─────────────────────────────────
+    if stage == "waiting_for_location":
+        _ents_loc = sess.get("collected_entities", {})
+        if not _ents_loc.get("wilaya") and not _ents_loc.get("delegation"):
+            bot_resp = Config.LOCATION_QUESTION
+            sess["history"].append(("bot", bot_resp))
+            return jsonify({"bot_response": bot_resp, "transferred": False,
+                            "session_ended": False, "analysis": {}})
+        elif _ents_loc.get("wilaya") and not _ents_loc.get("delegation"):
+            bot_resp = _build_delegation_question(_ents_loc)
+            sess["stage"] = "waiting_for_delegation"
+            sess["history"].append(("bot", bot_resp))
+            return jsonify({"bot_response": bot_resp, "transferred": False,
+                            "session_ended": False, "analysis": {}})
+        else:
+            sess["stage"] = "responding"
+            stage         = "responding"
+
+    # ── Délégation attendue ───────────────────────────────────
+    if stage == "waiting_for_delegation":
+        _ents_deleg = sess.get("collected_entities", {})
+        if not _ents_deleg.get("delegation"):
+            bot_resp = _build_delegation_question(_ents_deleg)
+            sess["history"].append(("bot", bot_resp))
+            return jsonify({"bot_response": bot_resp, "transferred": False,
+                            "session_ended": False, "analysis": {}})
+        else:
+            sess["stage"] = "responding"
+            stage         = "responding"
+
+    # ── Numéro de demande reçu → réponse apprise OU transfert ───────────────────
     if stage == "waiting_for_request_number":
+        _orig_prob_nr = (sess.get("original_problem") or
+                         sess.get("last_transferred_problem") or "").strip()
+        _learned_nr   = _find_session_learned_response(sess, _orig_prob_nr) if _orig_prob_nr else None
+        if _learned_nr:
+            bot_resp = _localize_response(_learned_nr, sess.get("collected_entities"))
+            sess["history"].append(("bot", bot_resp))
+            sess["stage"]          = "initial"
+            sess["pending_intent"] = ""
+            sess["solution_given"] = True
+            logger.info(f"[{sid}] Réponse apprise (waiting_for_request_number) — transfert évité")
+            return jsonify({
+                "bot_response": bot_resp, "transferred": False, "session_ended": False,
+                "analysis": _build_analysis(nlu_result, {},
+                                            collected_entities=sess.get("collected_entities")),
+            })
         sess["transferred"] = True
-        # Mémoriser le problème ORIGINAL (pas le numéro fourni) pour l'apprentissage session
         sess["last_transferred_problem"] = sess.get("original_problem") or user_text
         bot_resp = Config.TRANSFER_MESSAGE
         ticket = transfer.create_ticket(
@@ -545,15 +703,13 @@ def chat():
         )
         sess["history"].append(("bot", bot_resp))
         sess["stage"]          = "initial"
-        sess["pending_intent"] = ""
         sess["solution_given"] = True
-        logger.info(f"[{sid}] Numéro de demande reçu → transfert humain forcé")
+        logger.info(f"[{sid}] Numéro de demande reçu → transfert humain")
         _transfer_rag = {"confidence": 0.0, "escalate": True,
                          "issue_type": sess.get("pending_intent", ""),
                          "service_type": "", "action": "تحويل لوكيل بشري"}
         return jsonify({
-            "bot_response": bot_resp,
-            "transferred":  True,
+            "bot_response": bot_resp, "transferred": True,
             "ticket_id":    ticket.get("ticket_id"),
             "analysis":     _build_analysis(nlu_result, _transfer_rag,
                                             collected_entities=sess.get("collected_entities"),
@@ -582,6 +738,63 @@ def chat():
                                              collected_entities=sess.get("collected_entities")),
             "turn":          sess["turn"],
         })
+
+    # ── Check localisation avant RAG ─────────────────────────────────────────
+    _ents_step2   = sess.get("collected_entities", {})
+    _intent_step2 = active_intent or intent
+    _loc_in_clari = sess.pop("location_in_clari", None)
+    _asked_full_loc  = (_loc_in_clari == "full")
+    _asked_deleg_loc = (_loc_in_clari == "delegation")
+
+    if _loc_in_clari:
+        _update_entities(sess, {}, user_text)
+        _ents_step2 = sess.get("collected_entities", {})
+
+    if _needs_location(_ents_step2, _intent_step2) and not _asked_full_loc:
+        bot_resp = Config.LOCATION_QUESTION
+        sess["stage"] = "waiting_for_location"
+        if not sess.get("original_problem"):
+            sess["original_problem"] = user_text
+        if not sess.get("pending_intent"):
+            sess["pending_intent"] = _intent_step2
+        sess["history"].append(("bot", bot_resp))
+        return jsonify({"bot_response": bot_resp, "transferred": False,
+                        "session_ended": False, "analysis": {}})
+    elif _needs_delegation(_ents_step2):
+        # Tous intents — wilaya connue mais délégation manquante.
+        # Note : on ne bloque plus sur _asked_deleg_loc car si l'user a répondu à la
+        # question combinée sans donner la délégation, on doit la redemander en standalone.
+        bot_resp = _build_delegation_question(_ents_step2)
+        sess["stage"] = "waiting_for_delegation"
+        if not sess.get("original_problem"):
+            sess["original_problem"] = user_text
+        if not sess.get("pending_intent"):
+            sess["pending_intent"] = _intent_step2
+        sess["history"].append(("bot", bot_resp))
+        return jsonify({"bot_response": bot_resp, "transferred": False,
+                        "session_ended": False, "analysis": {}})
+
+    # ── Apprentissage éphémère : check avant RAG ──────────────────────────────
+    # Si une réponse apprise existe → l'utiliser directement pour TOUS les intents
+    # (y compris مشكلة في الدفع, اعتراض على الفاتورة, انقطاع الانترنات, تأخير في التركيب)
+    # Le bot a déjà appris comment répondre → plus besoin de demander le numéro
+    _force_num_step2 = _is_ask_number_intent(
+        (sess.get("pending_intent") or active_intent or "").strip()
+    )
+    _orig_prob_step2 = (sess.get("original_problem") or
+                        sess.get("last_transferred_problem") or user_text).strip()
+    _learned_step2 = _find_session_learned_response(sess, _orig_prob_step2)
+    if _learned_step2:
+        bot_resp = _localize_response(_learned_step2, sess.get("collected_entities"))
+        sess["history"].append(("bot", bot_resp))
+        sess["stage"]          = "initial"
+        sess["pending_intent"] = ""
+        sess["solution_given"] = True
+        logger.info(f"[{sid}] Réponse apprise (step2) — transfert évité")
+        return jsonify({"bot_response": bot_resp, "transferred": False,
+                        "session_ended": False,
+                        "analysis": _build_analysis(nlu_result, {},
+                                                    collected_entities=sess.get("collected_entities"))})
 
     # Construire la requête : problème original + réponse clarification
     enriched_query = _build_enriched_query(sess, user_text)
@@ -631,13 +844,50 @@ def chat():
                 f"rag_conf={rag_conf:.3f} < {strict_threshold} → escalade forcée"
             )
 
-    # Transférer dès que le RAG ne trouve pas de réponse fiable
-    # قرار الذكاء الاصطناعي → تحويل لوكيل بشري
-    should_transfer = rag_escalate
+    # Certains intents ne déclenchent jamais de transfert
+    if rag_escalate:
+        _chk_no_tr = (sess.get("pending_intent") or active_intent or "").strip()
+        if _is_no_transfer_intent(_chk_no_tr):
+            rag_escalate = False
 
-    if should_transfer:
+    if rag_escalate:
+        _chk_esc_intent = (sess.get("pending_intent") or active_intent or "").strip()
+        _force_num_esc  = _is_ask_number_intent(_chk_esc_intent)
+
+        # Réponse apprise ? → répondre directement (pour TOUS les intents, y compris
+        # مشكلة في الدفع, اعتراض على الفاتورة, انقطاع الانترنات, تأخير في التركيب)
+        # Le bot a déjà appris la réponse → court-circuite le transfert ET la demande de numéro
+        _orig_prob_p4 = (sess.get("original_problem") or
+                         sess.get("last_transferred_problem") or user_text).strip()
+        _learned_p4 = _find_session_learned_response(sess, _orig_prob_p4)
+        if _learned_p4:
+            bot_resp = _localize_response(_learned_p4, sess.get("collected_entities"))
+            sess["history"].append(("bot", bot_resp))
+            sess["stage"]          = "initial"
+            sess["pending_intent"] = ""
+            sess["solution_given"] = True
+            logger.info(f"[{sid}] Réponse apprise (rag_escalate) — transfert évité")
+            return jsonify({
+                "bot_response": bot_resp, "transferred": False, "session_ended": False,
+                "analysis": _build_analysis(nlu_result, {},
+                                            collected_entities=sess.get("collected_entities")),
+            })
+
+        # 4 intents à numéro obligatoire → demander le numéro au lieu de transférer
+        if _force_num_esc:
+            _ask_num = getattr(Config, "ASK_REQUEST_NUMBER_MSG",
+                               "أعطيني رقم الطلب أو المعاملة باش نكمل معك.")
+            sess["stage"] = "waiting_for_request_number"
+            if not sess.get("pending_intent"):
+                sess["pending_intent"] = active_intent
+            if not sess.get("original_problem"):
+                sess["original_problem"] = user_text
+            sess["history"].append(("bot", _ask_num))
+            logger.info(f"[{sid}] {_chk_esc_intent} — demande numéro (rag_escalate)")
+            return jsonify({"bot_response": _ask_num, "transferred": False,
+                            "session_ended": False, "analysis": {}})
+
         sess["transferred"] = True
-        # Mémoriser le problème original pour l'apprentissage éphémère de session
         sess["last_transferred_problem"] = sess.get("original_problem") or user_text
         bot_resp = Config.TRANSFER_MESSAGE
         ticket   = transfer.create_ticket(
@@ -646,48 +896,88 @@ def chat():
             rag_confidence=rag_conf,
         )
         sess["history"].append(("bot", bot_resp))
-        # Activer la détection de remerciement après le transfert
         sess["stage"]          = "initial"
         sess["pending_intent"] = ""
         sess["solution_given"] = True
         logger.info(
             f"[{sid}] Transfert humain → intent='{active_intent}' "
-            f"rag_conf={rag_conf:.3f} escalate={rag_escalate}"
+            f"rag_conf={rag_conf:.3f}"
         )
-        # Si NLU était peu confiant → problème non reconnu → champs NLU vides
         _low_nlu = (current_stage == "responding"
                     and ml_conf < Config.NLU_MIN_CONFIDENCE_FOR_CLARI)
         return jsonify({
-            "bot_response": bot_resp,
-            "transferred":  True,
+            "bot_response": bot_resp, "transferred": True,
             "ticket_id":    ticket.get("ticket_id"),
             "analysis":     _build_analysis(nlu_result, rag_result,
                                             collected_entities=sess.get("collected_entities"),
-                                            transferred=True,
-                                            unknown_problem=_low_nlu),
+                                            transferred=True, unknown_problem=_low_nlu),
         })
 
     # ── Choisir la réponse ────────────────────────────────────
-    # قرار الذكاء الاصطناعي → حل تلقائي
     bot_resp = rag_result.get("response") or nlu_result.get("ml_response") or ""
     if not bot_resp:
         bot_resp = Config.NOT_UNDERSTOOD_MSG
 
-    # Remplacer toute localisation du dataset par la localisation réelle de l'user
-    bot_resp = _localize_response(bot_resp, sess.get("collected_entities"))
+    # ── Intercept localisation : AVANT de retourner la réponse RAG ──────────────
+    # Déclencheurs (OR) :
+    #   A. Intent dans LOCATION_DEPENDENT_INTENTS → localisation toujours nécessaire
+    #   B. Réponse RAG contient une wilaya hardcodée
+    # "في تونس" géré séparément dans _localize_response.
+    _ents_rag_chk   = sess.get("collected_entities", {})
+    _chk_rag_intent = (sess.get("pending_intent") or active_intent or "").strip()
+    _rag_needs_loc  = (
+        _needs_location_intent(_chk_rag_intent)
+        or _response_has_wilaya(bot_resp)
+    )
+    if _rag_needs_loc and _needs_location(_ents_rag_chk, _chk_rag_intent) and not _asked_full_loc:
+        loc_q = Config.LOCATION_QUESTION
+        sess["stage"] = "waiting_for_location"
+        if not sess.get("pending_intent"):
+            sess["pending_intent"] = active_intent
+        if not sess.get("original_problem"):
+            sess["original_problem"] = user_text
+        sess["history"].append(("bot", loc_q))
+        logger.info(f"[{sid}] Localisation manquante (intent={_chk_rag_intent}) → demande wilaya+délégation")
+        return jsonify({"bot_response": loc_q, "transferred": False,
+                        "session_ended": False, "analysis": {}})
+    elif _needs_delegation(_ents_rag_chk):
+        # Tous intents — wilaya connue mais délégation manquante.
+        # Garde _asked_deleg_loc supprimé : on redemande si l'user n'a pas répondu à clari.
+        deleg_q = _build_delegation_question(_ents_rag_chk)
+        sess["stage"] = "waiting_for_delegation"
+        if not sess.get("pending_intent"):
+            sess["pending_intent"] = active_intent
+        if not sess.get("original_problem"):
+            sess["original_problem"] = user_text
+        sess["history"].append(("bot", deleg_q))
+        logger.info(f"[{sid}] Délégation manquante (wilaya={_ents_rag_chk.get('wilaya')}) → demande")
+        return jsonify({"bot_response": deleg_q, "transferred": False,
+                        "session_ended": False, "analysis": {}})
 
-    # ── Filet de sécurité : détection de boucle ──────────────
-    # Si le bot allait répéter EXACTEMENT la même réponse qu'au tour précédent
-    # → le RAG est bloqué sur le même record → transfert forcé vers agent humain.
-    # Couvre les cas où le seuil strict n'a pas suffi (réponse avec conf >= 0.60
-    # mais qui est quand même une réponse de clarification recyclée par le RAG).
+    bot_resp = response_eng._strip_emojis(
+        _localize_response(bot_resp, sess.get("collected_entities"))
+    )
+
+    # ── Détection de boucle ───────────────────────────────────
     last_bot_resp = next(
         (t for role, t in reversed(sess.get("history", [])) if role == "bot"), ""
     )
-    if last_bot_resp and bot_resp.strip() == last_bot_resp.strip():
-        logger.info(
-            f"[{sid}] BOUCLE DÉTECTÉE : bot allait répéter la même réponse → transfert forcé"
-        )
+    _chk_loop = (sess.get("pending_intent") or active_intent or "").strip()
+    if last_bot_resp and bot_resp.strip() == last_bot_resp.strip() and not _is_no_transfer_intent(_chk_loop):
+        _orig_prob_p5 = (sess.get("original_problem") or
+                         sess.get("last_transferred_problem") or user_text).strip()
+        _learned_p5 = _find_session_learned_response(sess, _orig_prob_p5)
+        if _learned_p5:
+            bot_resp = _localize_response(_learned_p5, sess.get("collected_entities"))
+            sess["history"].append(("bot", bot_resp))
+            sess["stage"]          = "initial"
+            sess["pending_intent"] = ""
+            sess["solution_given"] = True
+            logger.info(f"[{sid}] Réponse apprise (loop detection) — transfert évité")
+            return jsonify({"bot_response": bot_resp, "transferred": False,
+                            "session_ended": False,
+                            "analysis": _build_analysis(nlu_result, {},
+                                                        collected_entities=sess.get("collected_entities"))})
         sess["transferred"] = True
         sess["last_transferred_problem"] = sess.get("original_problem") or user_text
         bot_resp = Config.TRANSFER_MESSAGE
@@ -700,9 +990,9 @@ def chat():
         sess["stage"]          = "initial"
         sess["pending_intent"] = ""
         sess["solution_given"] = True
+        logger.info(f"[{sid}] BOUCLE DÉTECTÉE → transfert")
         return jsonify({
-            "bot_response": bot_resp,
-            "transferred":  True,
+            "bot_response": bot_resp, "transferred": True,
             "ticket_id":    ticket.get("ticket_id"),
             "analysis":     _build_analysis(nlu_result, rag_result,
                                             collected_entities=sess.get("collected_entities"),
@@ -711,14 +1001,34 @@ def chat():
 
     sess["history"].append(("bot", bot_resp))
 
-    # Si le bot demande à l'user de FOURNIR le numéro de demande
-    # → prochain tour = l'user donne le numéro → transfert immédiat
-    if "اعطيني رقم المطلب" in bot_resp:
+    # ── 4 intents à numéro obligatoire : forcer la demande si RAG ne l'a pas fait ──
+    _force_num_rag = _is_ask_number_intent(
+        (sess.get("pending_intent") or active_intent or "").strip()
+    )
+    if _force_num_rag and not _ASK_NUMBER_RE.search(bot_resp):
+        _ask_num_rag = getattr(Config, "ASK_REQUEST_NUMBER_MSG",
+                               "أعطيني رقم الطلب أو المعاملة باش نكمل معك.")
+        if sess["history"] and sess["history"][-1][0] == "bot":
+            sess["history"][-1] = ("bot", _ask_num_rag)
         sess["stage"] = "waiting_for_request_number"
-        logger.info(f"[{sid}] Bot a demandé le numéro → stage=waiting_for_request_number")
+        if not sess.get("pending_intent"):
+            sess["pending_intent"] = active_intent
+        if not sess.get("original_problem"):
+            sess["original_problem"] = user_text
+        logger.info(f"[{sid}] Demande numéro forcée (RAG intercepté)")
+        return jsonify({"bot_response": _ask_num_rag, "transferred": False,
+                        "session_ended": False, "analysis": {}})
+
+    if _ASK_NUMBER_RE.search(bot_resp):
+        sess["stage"] = "waiting_for_request_number"
+        if not sess.get("pending_intent"):
+            sess["pending_intent"] = active_intent
+        if not sess.get("original_problem"):
+            sess["original_problem"] = user_text
+        logger.info(f"[{sid}] Bot a demandé le numéro → waiting_for_request_number")
+    elif _CALLBACK_NUMBER_RE.search(bot_resp):
+        sess["stage"] = "waiting_for_callback_number"
     else:
-        # Remettre en mode initial pour le prochain problème dans la même session
-        # et marquer qu'une solution a été fournie (attend un éventuel remerciement)
         sess["stage"]          = "initial"
         sess["pending_intent"] = ""
         sess["solution_given"] = True
@@ -942,7 +1252,7 @@ def voice():
         nlu_result   = nlu.analyze(transcript)
         intent       = nlu_result.get("intent", "")
         service_type = nlu_result.get("entities", {}).get("service_type", "")
-        _update_entities(sess, nlu_result)
+        _update_entities(sess, nlu_result, transcript)
 
         sess["turn"] += 1
         sess["history"].append(("user", transcript))
@@ -954,8 +1264,9 @@ def voice():
 
         if stage == "initial":
             # ── Apprentissage éphémère vocal : réponse déjà apprise dans cette session ──
+            _force_num_init_v = _is_ask_number_intent(intent.strip())
             _session_resp_v = _find_session_learned_response(sess, transcript)
-            if _session_resp_v:
+            if _session_resp_v and not _force_num_init_v:
                 bot_resp_v = _localize_response(_session_resp_v, sess.get("collected_entities"))
                 sess["history"].append(("bot", bot_resp_v))
                 sess["solution_given"] = True
@@ -1050,15 +1361,24 @@ def voice():
             )
             if clari_ok:
                 bot_resp = response_eng._strip_emojis(clari["question"])
+                _ents_clari_v = sess.get("collected_entities", {})
 
-                # Si la délégation n'est pas encore connue → la demander en même temps
-                if _needs_delegation(sess.get("collected_entities")):
-                    w = sess["collected_entities"].get("wilaya", "")
-                    bot_resp += "  " + Config.DELEGATION_QUESTION.format(wilaya=w)
+                # Combiner clarification + question de localisation dans un seul message
+                if _needs_location_intent(intent):
+                    if _needs_delegation(_ents_clari_v):
+                        bot_resp += "  " + _build_delegation_question(_ents_clari_v)
+                        sess["location_in_clari"] = "delegation"
+                    elif _needs_location(_ents_clari_v, intent):
+                        bot_resp += "  " + Config.LOCATION_QUESTION
+                        sess["location_in_clari"] = "full"
+                elif _needs_delegation(_ents_clari_v):
+                    # Intent non listé, mais l'user a mentionné une wilaya → demander la délégation
+                    bot_resp += "  " + _build_delegation_question(_ents_clari_v)
+                    sess["location_in_clari"] = "delegation"
 
-                sess["stage"]          = "clarifying"
-                sess["pending_intent"] = clari.get("intent") or intent
-                sess["original_problem"] = transcript   # mémoriser pour apprentissage session
+                sess["stage"]            = "clarifying"
+                sess["pending_intent"]   = clari.get("intent") or intent
+                sess["original_problem"] = transcript
                 sess["history"].append(("bot", bot_resp))
                 return jsonify({
                     "transcript":   transcript,
@@ -1077,10 +1397,67 @@ def voice():
         # Étape 2 : réponse
         active_intent = sess.get("pending_intent") or intent
 
-        # ── Détection numéro de demande vocal → transfert humain forcé ──
+        # ── Numéro de rappel reçu → clore la conversation (voice) ──────────
+        if stage == "waiting_for_callback_number":
+            bot_resp = Config.THANKS_MESSAGE
+            sess["history"].append(("bot", bot_resp))
+            sess["stage"]          = "waiting_greeting"
+            sess["pending_intent"] = ""
+            sess["solution_given"] = True
+            return jsonify({"transcript": transcript, "bot_response": bot_resp,
+                            "transferred": False, "session_ended": True, "analysis": {}})
+
+        # ── Localisation attendue (voice) ─────────────────────────────────
+        if stage == "waiting_for_location":
+            _ents_loc_v = sess.get("collected_entities", {})
+            if not _ents_loc_v.get("wilaya") and not _ents_loc_v.get("delegation"):
+                bot_resp = Config.LOCATION_QUESTION
+                sess["history"].append(("bot", bot_resp))
+                return jsonify({"transcript": transcript, "bot_response": bot_resp,
+                                "transferred": False, "session_ended": False, "analysis": {}})
+            elif _ents_loc_v.get("wilaya") and not _ents_loc_v.get("delegation"):
+                bot_resp = _build_delegation_question(_ents_loc_v)
+                sess["stage"] = "waiting_for_delegation"
+                sess["history"].append(("bot", bot_resp))
+                return jsonify({"transcript": transcript, "bot_response": bot_resp,
+                                "transferred": False, "session_ended": False, "analysis": {}})
+            else:
+                sess["stage"] = "responding"
+                stage         = "responding"
+
+        # ── Délégation attendue (voice) ───────────────────────────────────
+        if stage == "waiting_for_delegation":
+            _ents_deleg_v = sess.get("collected_entities", {})
+            if not _ents_deleg_v.get("delegation"):
+                bot_resp = _build_delegation_question(_ents_deleg_v)
+                sess["history"].append(("bot", bot_resp))
+                return jsonify({"transcript": transcript, "bot_response": bot_resp,
+                                "transferred": False, "session_ended": False, "analysis": {}})
+            else:
+                sess["stage"] = "responding"
+                stage         = "responding"
+
+        # ── Numéro de demande vocal reçu → réponse apprise OU transfert ──
         if stage == "waiting_for_request_number":
+            _orig_prob_nr_v = (sess.get("original_problem") or
+                               sess.get("last_transferred_problem") or "").strip()
+            _learned_nr_v   = _find_session_learned_response(sess, _orig_prob_nr_v) if _orig_prob_nr_v else None
+            if _learned_nr_v:
+                bot_resp = _localize_response(_learned_nr_v, sess.get("collected_entities"))
+                sess["history"].append(("bot", bot_resp))
+                sess["stage"]          = "initial"
+                sess["pending_intent"] = ""
+                sess["solution_given"] = True
+                logger.info(f"[{sid}] (vocal) Réponse apprise (waiting_for_request_number) — transfert évité")
+                return jsonify({
+                    "transcript":    transcript,
+                    "bot_response":  bot_resp,
+                    "transferred":   False,
+                    "session_ended": False,
+                    "analysis":      _build_analysis(nlu_result, {},
+                                                     collected_entities=sess.get("collected_entities")),
+                })
             sess["transferred"] = True
-            # Mémoriser le problème ORIGINAL (pas le numéro fourni) pour l'apprentissage session
             sess["last_transferred_problem"] = sess.get("original_problem") or transcript
             bot_resp = Config.TRANSFER_MESSAGE
             ticket = transfer.create_ticket(
@@ -1092,7 +1469,7 @@ def voice():
             sess["stage"]          = "initial"
             sess["pending_intent"] = ""
             sess["solution_given"] = True
-            logger.info(f"[{sid}] (vocal) Numéro de demande reçu → transfert humain forcé")
+            logger.info(f"[{sid}] (vocal) Numéro de demande reçu → transfert humain")
             _transfer_rag_v = {"confidence": 0.0, "escalate": True,
                                "issue_type": sess.get("pending_intent", ""),
                                "service_type": "", "action": "تحويل لوكيل بشري"}
@@ -1122,6 +1499,63 @@ def voice():
                 "analysis":     _build_analysis(nlu_result, _neg_rag,
                                                 collected_entities=sess.get("collected_entities")),
             })
+
+        # ── Check localisation avant RAG (voice) ──────────────────────────────
+        _ents_step2_v    = sess.get("collected_entities", {})
+        _intent_step2_v  = active_intent or intent
+        _loc_in_clari_v  = sess.pop("location_in_clari", None)
+        _asked_full_loc_v  = (_loc_in_clari_v == "full")
+        _asked_deleg_loc_v = (_loc_in_clari_v == "delegation")
+
+        if _loc_in_clari_v:
+            _update_entities(sess, {}, transcript)
+            _ents_step2_v = sess.get("collected_entities", {})
+
+        if _needs_location(_ents_step2_v, _intent_step2_v) and not _asked_full_loc_v:
+            bot_resp = Config.LOCATION_QUESTION
+            sess["stage"] = "waiting_for_location"
+            if not sess.get("original_problem"):
+                sess["original_problem"] = transcript
+            if not sess.get("pending_intent"):
+                sess["pending_intent"] = _intent_step2_v
+            sess["history"].append(("bot", bot_resp))
+            return jsonify({"transcript": transcript, "bot_response": bot_resp,
+                            "transferred": False, "session_ended": False, "analysis": {}})
+        elif _needs_delegation(_ents_step2_v):
+            # Tous intents — wilaya connue mais délégation manquante.
+            # Garde _needs_location_intent et _asked_deleg_loc supprimés pour cohérence
+            # avec le chat texte : la délégation est toujours demandée même si l'intent
+            # n'est pas dans LOCATION_DEPENDENT_INTENTS, et même si déjà demandée dans clari.
+            bot_resp = _build_delegation_question(_ents_step2_v)
+            sess["stage"] = "waiting_for_delegation"
+            if not sess.get("original_problem"):
+                sess["original_problem"] = transcript
+            if not sess.get("pending_intent"):
+                sess["pending_intent"] = _intent_step2_v
+            sess["history"].append(("bot", bot_resp))
+            return jsonify({"transcript": transcript, "bot_response": bot_resp,
+                            "transferred": False, "session_ended": False, "analysis": {}})
+
+        # ── Apprentissage éphémère : check avant RAG (voice) ─────────────────
+        # Si une réponse apprise existe → l'utiliser directement (TOUS les intents)
+        # مشكلة في الدفع, اعتراض على الفاتورة, انقطاع الانترنات, تأخير في التركيب inclus
+        _force_num_s2_v  = _is_ask_number_intent(
+            (sess.get("pending_intent") or active_intent or "").strip()
+        )
+        _orig_prob_s2_v  = (sess.get("original_problem") or
+                            sess.get("last_transferred_problem") or transcript).strip()
+        _learned_s2_v    = _find_session_learned_response(sess, _orig_prob_s2_v)
+        if _learned_s2_v:
+            bot_resp = _localize_response(_learned_s2_v, sess.get("collected_entities"))
+            sess["history"].append(("bot", bot_resp))
+            sess["stage"]          = "initial"
+            sess["pending_intent"] = ""
+            sess["solution_given"] = True
+            logger.info(f"[{sid}] (vocal) Réponse apprise (step2) — transfert évité")
+            return jsonify({"transcript": transcript, "bot_response": bot_resp,
+                            "transferred": False, "session_ended": False,
+                            "analysis": _build_analysis(nlu_result, {},
+                                                        collected_entities=sess.get("collected_entities"))})
 
         enriched   = _build_enriched_query(sess, transcript)
         rag_result = response_eng.find_response(
@@ -1158,9 +1592,52 @@ def voice():
                     f"rag_conf={rag_conf:.3f} < {strict_threshold} → escalade forcée"
                 )
 
-        # Transfert humain si le RAG ne trouve pas de réponse fiable
-        # قرار الذكاء الاصطناعي → تحويل لوكيل بشري
+        # Certains intents ne déclenchent jamais de transfert (voice)
         if rag_escalate:
+            _chk_no_tr_v = (sess.get("pending_intent") or active_intent or "").strip()
+            if _is_no_transfer_intent(_chk_no_tr_v):
+                rag_escalate = False
+
+        # Transfert humain si le RAG ne trouve pas de réponse fiable (voice)
+        if rag_escalate:
+            _chk_esc_v      = (sess.get("pending_intent") or active_intent or "").strip()
+            _force_num_esc_v = _is_ask_number_intent(_chk_esc_v)
+
+            # Réponse apprise ? → répondre directement (TOUS les intents)
+            # Même pour مشكلة في الدفع, اعتراض على الفاتورة, انقطاع الانترنات, تأخير في التركيب
+            _orig_prob_v4 = (sess.get("original_problem") or
+                             sess.get("last_transferred_problem") or transcript).strip()
+            _learned_v4 = _find_session_learned_response(sess, _orig_prob_v4)
+            if _learned_v4:
+                bot_resp = _localize_response(_learned_v4, sess.get("collected_entities"))
+                sess["history"].append(("bot", bot_resp))
+                sess["stage"]          = "initial"
+                sess["pending_intent"] = ""
+                sess["solution_given"] = True
+                logger.info(f"[{sid}] (vocal) Réponse apprise (rag_escalate) — transfert évité")
+                return jsonify({
+                    "transcript":    transcript,
+                    "bot_response":  bot_resp,
+                    "transferred":   False,
+                    "session_ended": False,
+                    "analysis":      _build_analysis(nlu_result, {},
+                                                     collected_entities=sess.get("collected_entities")),
+                })
+
+            # 4 intents à numéro obligatoire → demander le numéro au lieu de transférer
+            if _force_num_esc_v:
+                _ask_num_v = getattr(Config, "ASK_REQUEST_NUMBER_MSG",
+                                     "أعطيني رقم الطلب أو المعاملة باش نكمل معك.")
+                sess["stage"] = "waiting_for_request_number"
+                if not sess.get("pending_intent"):
+                    sess["pending_intent"] = active_intent
+                if not sess.get("original_problem"):
+                    sess["original_problem"] = transcript
+                sess["history"].append(("bot", _ask_num_v))
+                logger.info(f"[{sid}] (vocal) {_chk_esc_v} — demande numéro (rag_escalate)")
+                return jsonify({"transcript": transcript, "bot_response": _ask_num_v,
+                                "transferred": False, "session_ended": False, "analysis": {}})
+
             sess["transferred"] = True
             sess["last_transferred_problem"] = sess.get("original_problem") or transcript
             bot_resp = Config.TRANSFER_MESSAGE
@@ -1173,7 +1650,7 @@ def voice():
             sess["stage"]          = "initial"
             sess["pending_intent"] = ""
             sess["solution_given"] = True
-            logger.info(f"[{sid}] Transfert humain (voice) → rag_conf={rag_conf:.3f}")
+            logger.info(f"[{sid}] (vocal) Transfert humain → rag_conf={rag_conf:.3f}")
             return jsonify({
                 "transcript":   transcript,
                 "bot_response": bot_resp,
@@ -1187,17 +1664,58 @@ def voice():
         # قرار الذكاء الاصطناعي → حل تلقائي
         bot_resp = rag_result.get("response") or nlu_result.get("ml_response") or Config.NOT_UNDERSTOOD_MSG
 
-        # Remplacer toute localisation du dataset par la localisation réelle de l'user
-        bot_resp = _localize_response(bot_resp, sess.get("collected_entities"))
+        # ── Intercept : réponse RAG contient une wilaya hardcodée + localisation incomplète ──
+        _ents_rag_v = sess.get("collected_entities", {})
+        if _response_has_wilaya(bot_resp) and _needs_location_intent(active_intent):
+            if _needs_location(_ents_rag_v, active_intent):
+                loc_q_v = Config.LOCATION_QUESTION
+                sess["stage"] = "waiting_for_location"
+                if not sess.get("pending_intent"):
+                    sess["pending_intent"] = active_intent
+                if not sess.get("original_problem"):
+                    sess["original_problem"] = transcript
+                sess["history"].append(("bot", loc_q_v))
+                logger.info(f"[{sid}] (vocal) RAG wilaya hardcodée, localisation inconnue → demande")
+                return jsonify({"transcript": transcript, "bot_response": loc_q_v,
+                                "transferred": False, "session_ended": False, "analysis": {}})
+            elif _needs_delegation(_ents_rag_v):
+                deleg_q_v = _build_delegation_question(_ents_rag_v)
+                sess["stage"] = "waiting_for_delegation"
+                if not sess.get("pending_intent"):
+                    sess["pending_intent"] = active_intent
+                if not sess.get("original_problem"):
+                    sess["original_problem"] = transcript
+                sess["history"].append(("bot", deleg_q_v))
+                logger.info(f"[{sid}] (vocal) RAG wilaya hardcodée, délégation manquante → demande")
+                return jsonify({"transcript": transcript, "bot_response": deleg_q_v,
+                                "transferred": False, "session_ended": False, "analysis": {}})
+
+        bot_resp = response_eng._strip_emojis(
+            _localize_response(bot_resp, sess.get("collected_entities"))
+        )
 
         # ── Filet de sécurité : détection de boucle (voice) ──
         last_bot_resp_v = next(
             (t for role, t in reversed(sess.get("history", [])) if role == "bot"), ""
         )
-        if last_bot_resp_v and bot_resp.strip() == last_bot_resp_v.strip():
-            logger.info(
-                f"[{sid}] BOUCLE DÉTECTÉE (voice) : même réponse → transfert forcé"
-            )
+        _chk_loop_v = (sess.get("pending_intent") or active_intent or "").strip()
+        if (last_bot_resp_v and bot_resp.strip() == last_bot_resp_v.strip()
+                and not _is_no_transfer_intent(_chk_loop_v)):
+            _orig_prob_v5 = (sess.get("original_problem") or
+                             sess.get("last_transferred_problem") or transcript).strip()
+            _learned_v5 = _find_session_learned_response(sess, _orig_prob_v5)
+            if _learned_v5:
+                bot_resp = _localize_response(_learned_v5, sess.get("collected_entities"))
+                sess["history"].append(("bot", bot_resp))
+                sess["stage"]          = "initial"
+                sess["pending_intent"] = ""
+                sess["solution_given"] = True
+                logger.info(f"[{sid}] (vocal) Réponse apprise (loop detection) — transfert évité")
+                return jsonify({"transcript": transcript, "bot_response": bot_resp,
+                                "transferred": False, "session_ended": False,
+                                "analysis": _build_analysis(nlu_result, {},
+                                                            collected_entities=sess.get("collected_entities"))})
+            logger.info(f"[{sid}] BOUCLE DÉTECTÉE (voice) : même réponse → transfert forcé")
             sess["transferred"] = True
             sess["last_transferred_problem"] = sess.get("original_problem") or transcript
             bot_resp = Config.TRANSFER_MESSAGE
@@ -1222,10 +1740,33 @@ def voice():
 
         sess["history"].append(("bot", bot_resp))
 
-        # Si le bot demande à l'user de FOURNIR le numéro → prochain tour = transfert
-        if "اعطيني رقم المطلب" in bot_resp:
+        # ── 4 intents à numéro obligatoire : forcer la demande si RAG ne l'a pas fait ──
+        _force_num_rag_v = _is_ask_number_intent(
+            (sess.get("pending_intent") or active_intent or "").strip()
+        )
+        if _force_num_rag_v and not _ASK_NUMBER_RE.search(bot_resp):
+            _ask_num_rag_v = getattr(Config, "ASK_REQUEST_NUMBER_MSG",
+                                     "أعطيني رقم الطلب أو المعاملة باش نكمل معك.")
+            if sess["history"] and sess["history"][-1][0] == "bot":
+                sess["history"][-1] = ("bot", _ask_num_rag_v)
             sess["stage"] = "waiting_for_request_number"
-            logger.info(f"[{sid}] (voice) Bot a demandé le numéro → stage=waiting_for_request_number")
+            if not sess.get("pending_intent"):
+                sess["pending_intent"] = active_intent
+            if not sess.get("original_problem"):
+                sess["original_problem"] = transcript
+            logger.info(f"[{sid}] (vocal) Demande numéro forcée (RAG intercepté)")
+            return jsonify({"transcript": transcript, "bot_response": _ask_num_rag_v,
+                            "transferred": False, "session_ended": False, "analysis": {}})
+
+        if _ASK_NUMBER_RE.search(bot_resp):
+            sess["stage"] = "waiting_for_request_number"
+            if not sess.get("pending_intent"):
+                sess["pending_intent"] = active_intent
+            if not sess.get("original_problem"):
+                sess["original_problem"] = transcript
+            logger.info(f"[{sid}] (vocal) Bot a demandé le numéro → waiting_for_request_number")
+        elif _CALLBACK_NUMBER_RE.search(bot_resp):
+            sess["stage"] = "waiting_for_callback_number"
         else:
             sess["stage"]          = "initial"
             sess["pending_intent"] = ""
@@ -1285,7 +1826,115 @@ def human_response():
     sess["pending_intent"]   = ""
     sess["original_problem"] = ""   # nettoyé : le prochain message est un nouveau problème
 
+    # ── Transmettre la réponse à user_app.py (port 5001) ─────────────────────
+    # CRITIQUE : user_app.py gère les sessions du bot mobile. Sans ce forward,
+    # le bot ne reçoit jamais la réponse de l'agent → il ne l'apprend pas et
+    # l'utilisateur ne la voit pas dans son interface mobile.
+    import urllib.request, urllib.error as _ue
+    _user_app_payload = json.dumps({
+        "ticket_id":  ticket_id,
+        "response":   response,
+        "session_id": sid,
+    }).encode("utf-8")
+    try:
+        _req = urllib.request.Request(
+            "http://127.0.0.1:5001/api/internal/agent_reply",
+            data=_user_app_payload,
+            headers={
+                "Content-Type":      "application/json",
+                "X-Internal-Secret": "tt_backoffice_2026",
+            },
+            method="POST",
+        )
+        with urllib.request.urlopen(_req, timeout=8) as _r:
+            _body = _r.read().decode("utf-8")
+            logger.info(f"[human_response] Réponse transmise à user_app : {_body[:80]}")
+    except _ue.HTTPError as _he:
+        logger.warning(f"[human_response] user_app HTTP {_he.code} : {_he.read().decode()[:80]}")
+    except Exception as _fe:
+        logger.warning(f"[human_response] user_app non accessible : {_fe}")
+
     return jsonify({"success": True, "learned": True})
+
+
+# ════════════════════════════════════════════════════════════
+#  STT voix de l'AGENT humain — prompt optimisé réponses agent
+#  Utilisé par le bouton mic dans la modal agent (index.html)
+# ════════════════════════════════════════════════════════════
+
+# Prompt STT spécialisé pour la voix de l'agent (solutions, instructions télécom)
+# Couvre spécifiquement les 5 types de problèmes gérés par apprentissage :
+#   تغيير الخدمة, مشكلة في الدفع, اعتراض على الفاتورة, انقطاع الانترنات, تأخير في التركيب
+_AGENT_STT_PROMPT = (
+    "وكيل دعم فني في تليكوم تونس يشرح حل لمشكلة بالدارجة التونسية. "
+    "الوكيل يعطي تعليمات وحلول واضحة. "
+    # ── تغيير الخدمة ──────────────────────────────────────────
+    "تغيير الخدمة: الطلب مسجل، راح يتغير الباقة، فريق التقني باش يتصل بيك. "
+    # ── مشكلة في الدفع ────────────────────────────────────────
+    "مشكلة الدفع: الدفع مسجل صح، العملية ناجحة، المبلغ تحصل، ما فماش مشكلة في الدفع. "
+    # ── اعتراض على الفاتورة ───────────────────────────────────
+    "اعتراض الفاتورة: الفاتورة صحيحة، المبلغ محسوب بالضبط، ما فماش خطأ في الفاتورة، "
+    "هذا الاستهلاك تاعك الحقيقي، راح نفتح ملف اعتراض. "
+    # ── انقطاع الانترنات ──────────────────────────────────────
+    "انقطاع الانترنت: فريق التدخل التقني باش يجي، المشكل راح يتسوى في ظرف، "
+    "ما فماش انقطاع في منطقتك، المنطقة تاعتك مغطاة، "
+    "راح نعمل إعادة تشغيل على الخط تاعك. "
+    # ── تأخير في التركيب ──────────────────────────────────────
+    "تأخير التركيب: الطلب مسجل، التقني باش يجي في الموعد، "
+    "ما فماش تأخير من عندنا، الموعد محدد. "
+    # ── كلمات شائعة في ردود الوكلاء ─────────────────────────
+    "الكلمات الشائعة: ياسر، برشا، مش مشكلة، حتى مشكلة، "
+    "ربي يعطيك الصحة، مشكور، شكرن على صبرك. "
+    "أسماء مدن: تونس، سوسة، صفاقس، المنستير، بنزرت، نابل، قابس."
+)
+
+@app.route("/api/voice_agent", methods=["POST"])
+def voice_agent():
+    """
+    STT spécialisé pour la voix de l'AGENT HUMAIN.
+
+    Différences par rapport à /api/voice (voix client) :
+      - initial_prompt adapté aux réponses d'agent (solutions télécom en darija)
+      - Couvre les 5 types de problèmes avec apprentissage
+      - beam_size plus élevé (7) pour meilleure précision sur vocabulaire technique
+      - no_speech_threshold plus bas (0.4) → capte mieux les voix d'agents (micro bureau)
+      - temperature légèrement plus haute (0.1) → moins de troncature sur phrases longues
+
+    Retourne : { "transcript": str }  — à injecter dans la textarea agent
+    """
+    if not stt_model:
+        return jsonify({"error": "Whisper non disponible"}), 503
+
+    audio_file = request.files.get("audio")
+    if not audio_file:
+        return jsonify({"error": "Pas de fichier audio"}), 400
+
+    try:
+        suffix = ".webm" if "webm" in (audio_file.content_type or "") else ".wav"
+        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+            audio_file.save(tmp.name)
+            tmp_path = tmp.name
+
+        # Paramètres STT optimisés pour la voix de l'agent
+        segments, _ = stt_model.transcribe(
+            tmp_path,
+            language=Config.STT_LANGUAGE,          # "ar"
+            beam_size=7,                            # Plus élevé → meilleure précision
+            vad_filter=False,                       # DÉSACTIVÉ — évite la coupure agressive des segments
+            initial_prompt=_AGENT_STT_PROMPT,       # Prompt spécialisé agent
+            temperature=0.0,                        # Déterministe → transcription complète
+            condition_on_previous_text=True,        # Continuité entre segments
+            no_speech_threshold=0.8,                # Haute tolérance → Whisper ignore peu de segments
+        )
+        transcript = " ".join(s.text.strip() for s in segments).strip()
+        os.unlink(tmp_path)
+
+        logger.info(f"[voice_agent] STT agent → '{transcript[:80]}'")
+        return jsonify({"transcript": transcript})
+
+    except Exception as e:
+        logger.error(f"Erreur voice_agent STT: {e}")
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route("/api/stats", methods=["GET"])
@@ -1626,34 +2275,45 @@ def _build_analysis(nlu_result, rag_result, clarifying=False, collected_entities
     }
 
 
-def _update_entities(sess: dict, nlu_result: dict):
+def _update_entities(sess: dict, nlu_result: dict, user_text: str = ""):
     """
     Accumule les entités sur plusieurs tours.
 
     Règle localisation :
       - wilaya / delegation ne sont mis à jour QUE si le NLU a trouvé la
         localisation EXPLICITEMENT dans le texte (location_explicit=True).
-      - Cela évite que les valeurs par défaut du ML ("تونس", "مارث"…)
-        écrasent une localisation correcte détectée sur un tour précédent.
+      - Fallback regex : si le NLU ne détecte pas de wilaya/délégation,
+        on tente de les extraire directement depuis user_text.
     """
     if "collected_entities" not in sess:
         sess["collected_entities"] = {}
 
     entities = nlu_result.get("entities", {})
     loc_explicit = entities.get("location_explicit", False)
+    collected = sess["collected_entities"]
 
     for k, v in entities.items():
         if k == "location_explicit":
-            continue   # champ interne, ne pas stocker
+            continue
         if not v:
-            continue   # ignorer les valeurs vides / None
-        # Localisation : ne mettre à jour que si détectée dans le texte
+            continue
         if k in ("wilaya", "delegation"):
             if loc_explicit:
-                sess["collected_entities"][k] = v
-            # Sinon : garder la valeur accumulée (ne pas écraser)
+                collected[k] = v
         else:
-            sess["collected_entities"][k] = v
+            collected[k] = v
+
+    # Fallback regex : wilaya depuis le texte si NLU ne l'a pas trouvée
+    if not collected.get("wilaya") and user_text:
+        w = _extract_wilaya_from_text(user_text)
+        if w:
+            collected["wilaya"] = w
+
+    # Fallback regex : délégation depuis le texte si NLU ne l'a pas trouvée
+    if not collected.get("delegation") and user_text:
+        d = _extract_delegation_from_text(user_text)
+        if d:
+            collected["delegation"] = d
 
 
 def _build_enriched_query(sess: dict, current_text: str) -> str:
@@ -1685,42 +2345,60 @@ def _is_stop(text):
     return bool(re.search("|".join(re.escape(k) for k in Config.STOP_KEYWORDS), text, re.IGNORECASE))
 
 
-def _localize_response(response: str, collected_entities: dict) -> str:
+def _localize_response(text: str, entities: dict) -> str:
     """
-    Remplace tout nom de localisation tunisienne dans la réponse du bot
-    par la localisation réelle de l'utilisateur.
-
-    Exemple :  "فما ضغط كبير حالياً في قفصة"
-             → "فما ضغط كبير حالياً في المنستير"
-    si collected_entities = {"wilaya": "المنستير", "delegation": "قصر هلال"}
-
-    Stratégie :
-      - Parcourt la liste triée (plus longs d'abord) pour éviter
-        les faux positifs partiels (ex: "سوسة" avant "بوسوسة").
-      - Remplace par la wilaya de l'user (le dataset répond
-        au niveau wilaya : "في قفصة", "في سوسة"…).
-      - S'arrête au premier remplacement (une seule localisation par réponse).
+    Localise une réponse RAG :
+    1. Remplace les placeholders ([المنطقة], [الولاية], [المعتمدية]…) par la localisation.
+    2. Remplace les noms de wilayas ÉTRANGÈRES (≠ wilaya du user) :
+       • Si le user est à المنستير et la réponse dit "في المنستير" → on garde
+       • Si le user est à المنستير et la réponse dit "في باجة" → remplacé par "في المنستير"
+       • Si localisation inconnue → wilaya étrangère remplacée par "منطقتك"
+    3. Remplace "في تونس" / "بتونس" / "بالعاصمة" (hardcodés dans beaucoup de réponses RAG)
+       par la wilaya réelle de l'utilisateur quand celui-ci n'est pas dans le Grand Tunis.
+       "تونس" est exclu de _WILAYA_RAW_DETECT (ambiguïté capitale/pays) mais traité ici.
     """
-    if not response:
-        return response
+    if not text:
+        return text
+    entities = entities or {}
+    user_wilaya = entities.get("wilaya", "")
+    user_deleg  = entities.get("delegation", "")
+    placeholder_loc = user_deleg or user_wilaya or "منطقتك"
 
-    user_wilaya = (collected_entities or {}).get("wilaya", "")
-    user_deleg  = (collected_entities or {}).get("delegation", "")
+    # Remplacer les placeholders textuels
+    for placeholder in ["[المنطقة]", "[الولاية]", "[المعتمدية]", "المنطقة المحددة"]:
+        text = text.replace(placeholder, placeholder_loc)
 
-    if not user_wilaya:
-        return response   # Localisation inconnue → rien à remplacer
+    # Remplacer les wilayas hardcodées (différentes de la wilaya du user)
+    if _WILAYA_DETECT_RE.search(text):
+        replacement = user_wilaya if user_wilaya else "منطقتك"
+        def _replace_wilaya_smart(m: re.Match) -> str:
+            found = m.group(0)
+            if user_wilaya and found == user_wilaya:
+                return found   # Ne pas remplacer la wilaya du user
+            return replacement
+        text = _WILAYA_DETECT_RE.sub(_replace_wilaya_smart, text)
 
-    # Ne pas remplacer la localisation de l'utilisateur elle-même
-    user_locs = {l for l in (user_wilaya, user_deleg) if l}
+    # Cas spécial "تونس" : remplacer dans les constructions locatives quand l'utilisateur
+    # n'est pas dans le Grand Tunis (تونس / أريانة / بن عروس / منوبة).
+    if user_wilaya and user_wilaya not in ("تونس", "أريانة", "بن عروس", "منوبة"):
+        text = re.sub(r'في\s+تونس\b', f'في {user_wilaya}', text)
+        text = re.sub(r'بتونس\b',     f'في {user_wilaya}', text)
+        text = re.sub(r'بالعاصمة',    f'في {user_wilaya}', text)
 
-    for loc in _ALL_TUNISIAN_LOCS:
-        if loc in user_locs:
-            continue
-        if loc in response:
-            response = response.replace(loc, user_wilaya)
-            break   # Un seul remplacement de localisation par réponse
+    return text
 
-    return response
+
+def _build_delegation_question(entities: dict) -> str:
+    """
+    Construit la question de délégation personnalisée avec la wilaya si connue.
+    Ex : "في أي معتمدية بالضبط في المنستير؟" ou "في أي معتمدية بالضبط؟"
+    """
+    wilaya = (entities or {}).get("wilaya", "").strip()
+    if wilaya:
+        tmpl = getattr(Config, "DELEGATION_QUESTION",
+                       "في أي معتمدية بالضبط في {wilaya}؟")
+        return tmpl.replace("{wilaya}", wilaya)
+    return getattr(Config, "DELEGATION_ONLY_QUESTION", "في أي معتمدية بالضبط؟")
 
 
 def _needs_delegation(collected_entities: dict) -> bool:

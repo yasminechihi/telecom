@@ -296,6 +296,34 @@ class ApiService {
   }
 
   // ════════════════════════════════════════════════════════
+  //  STT — Whisper backend (meilleur pour darija tunisienne)
+  //  Envoie un fichier audio WAV au backend et retourne la transcription.
+  //  Retourne null si le backend est inaccessible (fallback speech_to_text).
+  // ════════════════════════════════════════════════════════
+
+  /// Envoie un fichier audio au backend Whisper et retourne la transcription.
+  /// [filePath] : chemin vers le fichier audio (WAV/OGG/M4A).
+  /// Retourne null si le backend est inaccessible.
+  Future<String?> sttFromAudio(String filePath) async {
+    try {
+      final request = http.MultipartRequest(
+        'POST',
+        Uri.parse('$baseUrl/api/user/stt'),
+      );
+      if (_userId != null) request.headers['X-User-ID'] = _userId!;
+      request.files.add(await http.MultipartFile.fromPath('audio', filePath));
+      final streamed = await request.send().timeout(const Duration(seconds: 30));
+      final resp = await http.Response.fromStream(streamed);
+      if (resp.statusCode == 200) {
+        final data = jsonDecode(resp.body) as Map<String, dynamic>;
+        final text = data['text']?.toString() ?? '';
+        return text.isNotEmpty ? text : null;
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  // ════════════════════════════════════════════════════════
   //  TTS — edge-tts backend (ar-TN-ReemNeural)
   //  Même voix que l'interface web
   // ════════════════════════════════════════════════════════

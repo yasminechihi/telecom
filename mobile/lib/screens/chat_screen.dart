@@ -1,10 +1,13 @@
 import 'dart:async';
+import 'dart:io';
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:speech_to_text/speech_to_text.dart';
 import 'package:flutter_tts/flutter_tts.dart';
 import 'package:audioplayers/audioplayers.dart';
+import 'package:record/record.dart';
+import 'package:path_provider/path_provider.dart';
 import '../theme/app_theme.dart';
 import '../services/api_service.dart';
 import '../models/user_model.dart';
@@ -35,12 +38,16 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
   final _focusNode  = FocusNode();
 
   // ── STT / TTS ────────────────────────────────────────────
-  final _speech      = SpeechToText();
-  final _tts         = FlutterTts();          // fallback si backend indisponible
-  final _audioPlayer = AudioPlayer();         // lecture audio edge-tts (backend)
+  final _speech        = SpeechToText();
+  final _tts           = FlutterTts();          // fallback si backend indisponible
+  final _audioPlayer   = AudioPlayer();         // lecture audio edge-tts (backend)
+  final _audioRecorder = AudioRecorder();       // enregistrement pour Whisper backend
 
   bool _speechAvailable = false;
   bool _isListening     = false;
+  bool _isWhisperMode   = true;    // true = Whisper backend, false = on-device STT
+  bool _whisperLoading  = false;   // true pendant l'envoi au backend
+  String? _whisperTmpPath;         // chemin fichier audio temporaire
   String _voiceTranscript = '';
   bool _ttsEnabled      = false;
   bool _voiceMode       = false;   // false = texte, true = vocal
@@ -87,6 +94,11 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
     _focusNode.dispose();
     _tts.stop();
     _audioPlayer.dispose();
+    _audioRecorder.dispose();
+    // Nettoyer le fichier temporaire Whisper si présent
+    if (_whisperTmpPath != null) {
+      try { File(_whisperTmpPath!).deleteSync(); } catch (_) {}
+    }
     super.dispose();
   }
 
@@ -221,28 +233,92 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
   }
 
   // ── Mode vocal ───────────────────────────────────────────
+
+  /// Bascule enregistrement Whisper (backend) ou on-device selon _isWhisperMode.
   Future<void> _toggleListening() async {
     if (_isListening) {
+      await _stopListening();
+    } else {
+      await _startListening();
+    }
+  }
+
+  Future<void> _startListening() async {
+    setState(() { _isListening = true; _voiceTranscript = ''; _whisperLoading = false; });
+
+    if (_isWhisperMode) {
+      // ── Mode Whisper : enregistrement vers fichier temporaire ──
+      try {
+        final hasPermission = await _audioRecorder.hasPermission();
+        if (!hasPermission) {
+          setState(() => _isListening = false);
+          return;
+        }
+        final tmpDir  = await getTemporaryDirectory();
+        final tmpPath = '${tmpDir.path}/tt_stt_${DateTime.now().millisecondsSinceEpoch}.wav';
+        _whisperTmpPath = tmpPath;
+        await _audioRecorder.start(
+          const RecordConfig(encoder: AudioEncoder.wav, sampleRate: 16000, numChannels: 1),
+          path: tmpPath,
+        );
+      } catch (e) {
+        // Fallback on-device si l'enregistrement échoue
+        setState(() { _isListening = false; _isWhisperMode = false; });
+        await _startOnDeviceListening();
+      }
+    } else {
+      // ── Mode on-device : speech_to_text ──
+      await _startOnDeviceListening();
+    }
+  }
+
+  Future<void> _startOnDeviceListening() async {
+    setState(() => _isListening = true);
+    await _speech.listen(
+      onResult: (val) {
+        setState(() => _voiceTranscript = val.recognizedWords);
+      },
+      localeId: 'ar',
+      listenFor: const Duration(seconds: 30),
+      pauseFor: const Duration(seconds: 3),
+    );
+  }
+
+  Future<void> _stopListening() async {
+    if (_isWhisperMode) {
+      // ── Arrêt Whisper : envoyer l'audio au backend ──
+      setState(() { _isListening = false; _whisperLoading = true; });
+      try {
+        final path = await _audioRecorder.stop();
+        final filePath = path ?? _whisperTmpPath;
+        if (filePath != null && File(filePath).existsSync()) {
+          final transcript = await _api.sttFromAudio(filePath);
+          // Nettoyer le fichier temporaire
+          try { File(filePath).deleteSync(); } catch (_) {}
+          _whisperTmpPath = null;
+          if (mounted) {
+            setState(() {
+              _whisperLoading = false;
+              _voiceTranscript = transcript ?? '';
+            });
+          }
+          return;
+        }
+      } catch (_) {}
+      // En cas d'erreur : revenir au mode on-device pour ce tour
+      setState(() => _whisperLoading = false);
+    } else {
+      // ── Arrêt on-device ──
       await _speech.stop();
       setState(() => _isListening = false);
-    } else {
-      setState(() { _isListening = true; _voiceTranscript = ''; });
-      await _speech.listen(
-        onResult: (val) {
-          setState(() => _voiceTranscript = val.recognizedWords);
-        },
-        localeId: 'ar',
-        listenFor: const Duration(seconds: 30),
-        pauseFor: const Duration(seconds: 3),
-      );
     }
   }
 
   void _sendTranscript() {
     if (_voiceTranscript.isEmpty) return;
     final text = _voiceTranscript;
-    setState(() { _voiceTranscript = ''; _isListening = false; });
-    _speech.stop();
+    setState(() { _voiceTranscript = ''; _isListening = false; _whisperLoading = false; });
+    if (!_isWhisperMode) _speech.stop();
     _sendMessage(text);
   }
 
@@ -752,6 +828,21 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
       ),
       child: Column(
         children: [
+          // ── Sélecteur STT : Whisper (backend) / On-device ──
+          Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              _sttModeChip('Whisper AI', Icons.cloud_rounded, _isWhisperMode, () {
+                if (!_isListening && !_whisperLoading) setState(() => _isWhisperMode = true);
+              }),
+              const SizedBox(width: 8),
+              _sttModeChip('Appareil', Icons.phone_android_rounded, !_isWhisperMode, () {
+                if (!_isListening && !_whisperLoading) setState(() => _isWhisperMode = false);
+              }),
+            ],
+          ),
+          const SizedBox(height: 8),
+
           // Transcript preview
           if (_voiceTranscript.isNotEmpty)
             Container(
@@ -781,15 +872,18 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
             children: [
               // Bouton microphone
               GestureDetector(
-                onTap: _speechAvailable ? _toggleListening : null,
+                onTap: (_isWhisperMode || _speechAvailable) && !_whisperLoading
+                    ? _toggleListening : null,
                 child: AnimatedContainer(
                   duration: const Duration(milliseconds: 200),
                   width: 72, height: 72,
                   decoration: BoxDecoration(
                     gradient: LinearGradient(
-                      colors: _isListening
-                          ? [const Color(0xFFDC2626), const Color(0xFFEF4444)]
-                          : [TTColors.purple, TTColors.purpleLight],
+                      colors: _whisperLoading
+                          ? [TTColors.muted, TTColors.muted]
+                          : _isListening
+                              ? [const Color(0xFFDC2626), const Color(0xFFEF4444)]
+                              : [TTColors.purple, TTColors.purpleLight],
                     ),
                     shape: BoxShape.circle,
                     boxShadow: [BoxShadow(
@@ -799,10 +893,13 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
                       offset: const Offset(0, 4),
                     )],
                   ),
-                  child: Icon(
-                    _isListening ? Icons.stop_rounded : Icons.mic_rounded,
-                    color: Colors.white, size: 32,
-                  ),
+                  child: _whisperLoading
+                      ? const SizedBox(width: 28, height: 28,
+                          child: CircularProgressIndicator(strokeWidth: 3, color: Colors.white))
+                      : Icon(
+                          _isListening ? Icons.stop_rounded : Icons.mic_rounded,
+                          color: Colors.white, size: 32,
+                        ),
                 ),
               ),
               if (_voiceTranscript.isNotEmpty) ...[
@@ -830,20 +927,48 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
 
           // Statut
           Text(
-            _isListening
-                ? 'Enregistrement… parlez maintenant'
-                : !_speechAvailable
-                    ? 'Microphone non disponible'
-                    : _voiceTranscript.isNotEmpty
-                        ? 'Transcrit — vérifiez et envoyez'
-                        : 'Appuyez pour parler',
+            _whisperLoading
+                ? 'Whisper AI transcrit… patienter'
+                : _isListening
+                    ? 'Enregistrement… parlez maintenant'
+                    : !_isWhisperMode && !_speechAvailable
+                        ? 'Microphone non disponible'
+                        : _voiceTranscript.isNotEmpty
+                            ? 'Transcrit — vérifiez et envoyez'
+                            : _isWhisperMode
+                                ? 'Appuyez — Whisper capte le dialecte tunisien'
+                                : 'Appuyez pour parler',
             style: TextStyle(
               fontSize: 12, fontFamily: 'Cairo', fontWeight: FontWeight.w600,
-              color: _isListening ? const Color(0xFFDC2626) : TTColors.muted,
+              color: _isListening ? const Color(0xFFDC2626)
+                  : _whisperLoading ? TTColors.teal : TTColors.muted,
             ),
             textAlign: TextAlign.center,
           ),
         ],
+      ),
+    );
+  }
+
+  Widget _sttModeChip(String label, IconData icon, bool active, VoidCallback onTap) {
+    return GestureDetector(
+      onTap: onTap,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 200),
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+        decoration: BoxDecoration(
+          color: active ? TTColors.purpleBg : TTColors.gray,
+          border: Border.all(color: active ? TTColors.purple.withOpacity(0.4) : TTColors.border),
+          borderRadius: BorderRadius.circular(20),
+        ),
+        child: Row(mainAxisSize: MainAxisSize.min, children: [
+          Icon(icon, size: 13, color: active ? TTColors.purple : TTColors.muted),
+          const SizedBox(width: 5),
+          Text(label, style: TextStyle(
+            fontSize: 11, fontFamily: 'Cairo', fontWeight: FontWeight.w600,
+            color: active ? TTColors.purple : TTColors.muted,
+          )),
+        ]),
       ),
     );
   }
