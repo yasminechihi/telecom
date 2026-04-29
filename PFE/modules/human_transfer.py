@@ -44,9 +44,17 @@ class HumanTransfer:
         user_last_text: str,
         nlu_result: dict,
         rag_confidence: float,
+        original_problem: str = "",
     ) -> dict:
         """
         Crée un ticket de transfert et l'ajoute à la file d'attente.
+
+        Args:
+            original_problem: Texte de la PREMIÈRE plainte du client (avant toute
+                              clarification ou demande de numéro). Utilisé pour
+                              l'apprentissage : garantit que la clé de recherche
+                              correspond toujours au problème initial, même si le
+                              transfert est déclenché après une série de tours.
 
         Returns:
             Dictionnaire ticket avec un ID unique.
@@ -57,23 +65,26 @@ class HumanTransfer:
         conversation_summary = self._build_summary(history)
 
         ticket = {
-            "ticket_id":      ticket_id,
-            "session_id":     session_id,
-            "timestamp":      datetime.now().isoformat(),
-            "status":         "pending",           # pending | in_progress | resolved
-            "priority":       self._get_priority(nlu_result),
-            "issue_summary":  conversation_summary,
-            "last_user_msg":  user_last_text,
-            "intent":         nlu_result.get("intent", "unknown"),
-            "entities":       nlu_result.get("entities", {}),
-            "sentiment":      nlu_result.get("sentiment", "neutre"),
-            "rag_confidence": round(rag_confidence, 3),
-            "conversation":   [
+            "ticket_id":        ticket_id,
+            "session_id":       session_id,
+            "timestamp":        datetime.now().isoformat(),
+            "status":           "pending",           # pending | in_progress | resolved
+            "priority":         self._get_priority(nlu_result),
+            "issue_summary":    conversation_summary,
+            "last_user_msg":    user_last_text,
+            # original_problem : plainte initiale du client (indépendante du tour de transfert)
+            # Priorité : argument explicite → last_user_text comme fallback
+            "original_problem": (original_problem or user_last_text).strip(),
+            "intent":           nlu_result.get("intent", "unknown"),
+            "entities":         nlu_result.get("entities", {}),
+            "sentiment":        nlu_result.get("sentiment", "neutre"),
+            "rag_confidence":   round(rag_confidence, 3),
+            "conversation":     [
                 {"role": role, "text": text}
                 for role, text in history
             ],
-            "human_response": None,  # À remplir par l'agent
-            "agent_id":       None,
+            "human_response":  None,  # À remplir par l'agent
+            "agent_id":        None,
             "resolution_time": None,
         }
 
@@ -181,6 +192,27 @@ class HumanTransfer:
                 except json.JSONDecodeError:
                     continue
         return ""
+
+    def get_ticket(self, ticket_id: str) -> dict:
+        """
+        Retourne le ticket complet correspondant à ticket_id.
+        Utile pour récupérer session_id et last_user_msg lors du transfert
+        d'apprentissage entre app.py et user_app.py.
+
+        Returns:
+            Dictionnaire du ticket ou {} si introuvable.
+        """
+        if not ticket_id or not os.path.exists(self.config.HUMAN_AGENT_QUEUE):
+            return {}
+        with open(self.config.HUMAN_AGENT_QUEUE, "r", encoding="utf-8") as f:
+            for line in f:
+                try:
+                    t = json.loads(line.strip())
+                    if t.get("ticket_id") == ticket_id:
+                        return t
+                except json.JSONDecodeError:
+                    continue
+        return {}
 
     # ─────────────────────────────────────────────────────────
     # Utilitaires

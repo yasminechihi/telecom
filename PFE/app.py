@@ -237,7 +237,7 @@ def get_session(sid: str) -> dict:
 #  Apprentissage éphémère (session uniquement)
 # ════════════════════════════════════════════════════════════
 
-def _session_learn_store(sess, problem_text, response_text):
+def _session_learn_store(sess, problem_text, response_text, intent=""):
     """
     Stocke une réponse apprise dans DEUX niveaux :
       1. Store global (_global_learned_responses) : partagé entre toutes les sessions,
@@ -245,12 +245,14 @@ def _session_learn_store(sess, problem_text, response_text):
       2. Store session (sess["session_learned_responses"]) : pour compatibilité.
 
     TOUJOURS stocke le texte, et TENTE d'ajouter l'embedding en bonus.
+    Le paramètre `intent` est stocké pour l'intent-boost lors de la recherche.
     """
     global _global_learned_responses
 
     entry = {
         "problem_text":  problem_text.strip(),
         "response_text": response_text.strip(),
+        "intent":        (intent or "").strip(),  # stocké pour intent-boost
         "embedding":     None,   # sera ajouté si le modèle est dispo
     }
 
@@ -280,7 +282,7 @@ def _session_learn_store(sess, problem_text, response_text):
     )
 
 
-def _find_session_learned_response(sess, query_text):
+def _find_session_learned_response_pair(sess, query_text, cur_intent=""):
     """
     Cherche si query_text correspond à un problème déjà résolu par un agent
     humain DANS CETTE SESSION.
@@ -290,15 +292,18 @@ def _find_session_learned_response(sess, query_text):
       2. Sous-chaîne (score 0.92)
       3. Recoupement de mots-clés ≥ 2 mots (score proportionnel)
       4. Similarité cosinus embedding ≥ 0.62
+      5. Intent-boost : si l'intent courant == intent stocké (tous deux non-vides /
+         non-unknown) → score = max(score, 0.82).
+         Permet de retrouver des reformulations différentes du même type de plainte.
 
-    Retourne la réponse apprise ou None.
+    Retourne (response_text, stored_intent) ou (None, "").
     Oublié au redémarrage du serveur (in-memory uniquement).
     """
     # ── Priorité au store global : contient les réponses de TOUTES les sessions ──
     # Si vide, fallback sur le store session (compatibilité)
     learned = _global_learned_responses or sess.get("session_learned_responses", [])
     if not learned:
-        return None
+        return None, ""
 
     logger.info(
         f"[Global Learning] Vérification : {len(learned)} réponse(s) en mémoire globale "
@@ -306,6 +311,10 @@ def _find_session_learned_response(sess, query_text):
     )
 
     import numpy as np
+
+    # Normaliser l'intent courant pour la couche 5
+    _unknown_intents_norm = {"غير محدد", "unknown", ""}
+    _cur_int_norm = _norm_intent_key(cur_intent or "").strip()
 
     # Pré-calculer l'embedding de la requête une seule fois (si modèle dispo)
     q_emb = None
@@ -316,10 +325,12 @@ def _find_session_learned_response(sess, query_text):
             logger.warning(f"[Global Learning] Erreur encoding requête : {_e}")
 
     best_score, best_resp, best_problem, best_method = 0.0, None, "", "—"
+    best_intent = ""
 
     for entry in learned:
-        problem = entry.get("problem_text", "").strip()
-        resp    = entry.get("response_text", "")
+        problem       = entry.get("problem_text", "").strip()
+        resp          = entry.get("response_text", "")
+        stored_intent = entry.get("intent", "")
         if not problem or not resp:
             continue
 
@@ -357,14 +368,30 @@ def _find_session_learned_response(sess, query_text):
                     except Exception:
                         pass
 
+        # ── Couche 5 : intent-boost ───────────────────────────
+        # Si l'intent courant (NLU de la plainte) == intent stocké lors du transfert,
+        # tous deux non-vides / non-inconnus → lever le score à 0.82.
+        # Résout le cas où la reformulation partage peu de mots mais même intent.
+        if (
+            _cur_int_norm
+            and _cur_int_norm not in _unknown_intents_norm
+            and stored_intent
+            and _norm_intent_key(stored_intent) not in _unknown_intents_norm
+            and _cur_int_norm == _norm_intent_key(stored_intent)
+        ):
+            if score < 0.82:
+                score  = 0.82
+                method = f"intent-boost({method})"
+
         logger.info(
             f"[Global Learning]   score={score:.3f} ({method}) "
-            f"'{query_text[:30]}' vs '{problem[:30]}'"
+            f"'{query_text[:30]}' vs '{problem[:30]}' intent_stored='{stored_intent}'"
         )
 
         if score > best_score:
             best_score, best_resp   = score, resp
             best_problem, best_method = problem, method
+            best_intent = stored_intent
 
     THRESHOLD = 0.62
     if best_score >= THRESHOLD and best_resp:
@@ -372,13 +399,23 @@ def _find_session_learned_response(sess, query_text):
             f"[Global Learning] ✅ MATCH ! score={best_score:.3f} "
             f"method={best_method} problem='{best_problem[:50]}'"
         )
-        return best_resp
+        return best_resp, best_intent
 
     logger.info(
         f"[Global Learning] ❌ Aucune correspondance "
         f"(meilleur={best_score:.3f} < {THRESHOLD})"
     )
-    return None
+    return None, ""
+
+
+def _find_session_learned_response(sess, query_text, cur_intent=""):
+    """
+    Wrapper autour de _find_session_learned_response_pair.
+    Retourne uniquement la réponse apprise (ou None) pour compatibilité
+    avec le code existant qui n'a pas besoin de l'intent stocké.
+    """
+    resp, _ = _find_session_learned_response_pair(sess, query_text, cur_intent=cur_intent)
+    return resp
 
 # ════════════════════════════════════════════════════════════
 #  ROUTES
@@ -454,6 +491,24 @@ def chat():
             "analysis":      {},
         })
 
+    # ── Suivi court après solution (ex: "65", numéro de demande) ──────────
+    # Quand une solution a déjà été donnée et l'user envoie un message court
+    # (chiffres ou ≤ 6 caractères), traiter comme acquittement et clore proprement.
+    import re as _re_sol
+    _is_number_followup = bool(_re_sol.match(r'^\d[\d\s]*$', user_text.strip()))
+    if sess.get("solution_given") and (_is_number_followup or len(user_text.strip()) <= 6):
+        sess["history"].append(("user", user_text))
+        thanks_resp = Config.THANKS_MESSAGE
+        sess["history"].append(("bot", thanks_resp))
+        sess["stage"]          = "waiting_greeting"
+        sess["solution_given"] = False
+        logger.info(f"[{sid}] Suivi court post-solution ('{user_text.strip()}') → clôture")
+        return jsonify({
+            "bot_response":  thanks_resp,
+            "session_ended": True,
+            "analysis":      {},
+        })
+
     # ── Mot de clôture ────────────────────────────────────────
     if _is_stop(user_text):
         sess["history"].append(("user", user_text))
@@ -482,6 +537,48 @@ def chat():
 
     # ── ÉTAPE 1 : Première plainte → poser une QUESTION ──────
     if stage == "initial":
+        # ── Réponse apprise : vérifier AVANT la question de clarification ────
+        # Si le bot a déjà appris une réponse via un agent humain (tous intents
+        # connus ou inconnus), court-circuiter la clarification et répondre
+        # directement.  Pour les intents qui nécessitent un numéro de demande,
+        # demander le numéro en premier (2 tours au total).
+        _learned_init, _stored_intent_init = _find_session_learned_response_pair(
+            sess, user_text, cur_intent=intent
+        )
+        _force_num_init = _is_ask_number_intent(_stored_intent_init or intent)
+        if _learned_init and not _force_num_init:
+            bot_resp = _learned_init
+            sess["stage"]          = "initial"
+            sess["solution_given"] = True
+            sess["history"].append(("bot", bot_resp))
+            logger.info(
+                f"[{sid}] Réponse apprise (initial, tous intents) : "
+                f"'{user_text[:50]}' → '{bot_resp[:60]}'"
+            )
+            return jsonify({
+                "bot_response":  bot_resp,
+                "transferred":   False,
+                "session_ended": False,
+                "analysis":      _build_analysis(nlu_result, {}),
+            })
+        elif _learned_init and _force_num_init:
+            _ask_num_init = getattr(Config, "ASK_REQUEST_NUMBER_MSG",
+                                    "أعطيني رقم الطلب أو المعاملة باش نكمل معك.")
+            sess["stage"]            = "waiting_for_request_number"
+            sess["pending_intent"]   = _stored_intent_init or intent
+            sess["original_problem"] = user_text
+            sess["history"].append(("bot", _ask_num_init))
+            logger.info(
+                f"[{sid}] Réponse apprise (initial, tous intents) mais numéro requis "
+                f"(stored_intent='{_stored_intent_init}')"
+            )
+            return jsonify({
+                "bot_response":  _ask_num_init,
+                "transferred":   False,
+                "session_ended": False,
+                "analysis":      {},
+            })
+
         # Chercher la question dans le dataset via similarité sémantique pure
         clari = response_eng.find_clarification_question(
             user_text, nlu_intent=intent, nlu_service=service_type
@@ -554,8 +651,11 @@ def chat():
         # ── Vérifier si ce problème a déjà été résolu par un agent (cas inconnu) ──
         # Avant tout transfert (inconnu ou RAG faible), chercher une réponse apprise.
         if intent_unknown or rag_gate_failed:
-            _learned_unk = _find_session_learned_response(sess, user_text)
-            if _learned_unk:
+            _learned_unk, _stored_intent_unk = _find_session_learned_response_pair(
+                sess, user_text, cur_intent=intent
+            )
+            _force_num_unk = _is_ask_number_intent(_stored_intent_unk or intent)
+            if _learned_unk and not _force_num_unk:
                 bot_resp = _learned_unk
                 sess["stage"]          = "initial"
                 sess["solution_given"] = True
@@ -568,6 +668,24 @@ def chat():
                     "bot_response": bot_resp,
                     "transferred":  False,
                     "analysis":     _build_analysis(nlu_result, {}),
+                })
+            elif _learned_unk and _force_num_unk:
+                # Réponse apprise mais numéro requis → demander d'abord le numéro
+                _ask_num_unk = getattr(Config, "ASK_REQUEST_NUMBER_MSG",
+                                       "أعطيني رقم الطلب أو المعاملة باش نكمل معك.")
+                sess["stage"]            = "waiting_for_request_number"
+                sess["pending_intent"]   = _stored_intent_unk or intent
+                sess["original_problem"] = user_text
+                sess["history"].append(("bot", _ask_num_unk))
+                logger.info(
+                    f"[{sid}] Réponse apprise (cas inconnu) mais numéro requis → demande numéro "
+                    f"(stored_intent='{_stored_intent_unk}')"
+                )
+                return jsonify({
+                    "bot_response": _ask_num_unk,
+                    "transferred":  False,
+                    "session_ended": False,
+                    "analysis":     {},
                 })
 
         if intent_unknown and rag_gate_failed:
@@ -583,6 +701,7 @@ def chat():
                 session_id=sid, history=sess["history"],
                 user_last_text=user_text, nlu_result=nlu_result,
                 rag_confidence=clari["confidence"],
+                original_problem=(sess.get("original_problem") or user_text),
             )
             sess["history"].append(("bot", bot_resp))
             sess["stage"]          = "initial"
@@ -615,6 +734,7 @@ def chat():
                 session_id=sid, history=sess["history"],
                 user_last_text=user_text, nlu_result=nlu_result,
                 rag_confidence=clari["confidence"],
+                original_problem=(sess.get("original_problem") or user_text),
             )
             sess["history"].append(("bot", bot_resp))
             sess["stage"]          = "initial"
@@ -699,7 +819,11 @@ def chat():
     if stage == "waiting_for_request_number":
         _orig_prob_nr = (sess.get("original_problem") or
                          sess.get("last_transferred_problem") or "").strip()
-        _learned_nr   = _find_session_learned_response(sess, _orig_prob_nr) if _orig_prob_nr else None
+        _pi_nr = (sess.get("pending_intent") or "").strip()
+        _learned_nr, _ = (
+            _find_session_learned_response_pair(sess, _orig_prob_nr, cur_intent=_pi_nr)
+            if _orig_prob_nr else (None, "")
+        )
         if _learned_nr:
             bot_resp = _localize_response(_learned_nr, sess.get("collected_entities"))
             sess["history"].append(("bot", bot_resp))
@@ -719,6 +843,7 @@ def chat():
             session_id=sid, history=sess["history"],
             user_last_text=user_text, nlu_result=nlu_result,
             rag_confidence=0.0,
+            original_problem=(sess.get("original_problem") or user_text),
         )
         sess["history"].append(("bot", bot_resp))
         sess["stage"]          = "initial"
@@ -794,16 +919,20 @@ def chat():
                         "session_ended": False, "analysis": {}})
 
     # ── Apprentissage éphémère : check avant RAG ──────────────────────────────
-    # Si une réponse apprise existe → l'utiliser directement pour TOUS les intents
-    # (y compris مشكلة في الدفع, اعتراض على الفاتورة, انقطاع الانترنات, تأخير في التركيب)
-    # Le bot a déjà appris comment répondre → plus besoin de demander le numéro
-    _force_num_step2 = _is_ask_number_intent(
-        (sess.get("pending_intent") or active_intent or "").strip()
-    )
+    # Si une réponse apprise existe → l'utiliser directement SAUF pour les 4 intents
+    # qui nécessitent un numéro de demande (مشكلة في الدفع, اعتراض على الفاتورة,
+    # انقطاع الانترنات, تأخير في التركيب).
+    # Pour ces intents : l'apprentissage s'effectue après la saisie du numéro
+    # (stage waiting_for_request_number) afin de préserver l'expérience attendue.
+    _cur_intent_step2 = (sess.get("pending_intent") or active_intent or "").strip()
     _orig_prob_step2 = (sess.get("original_problem") or
                         sess.get("last_transferred_problem") or user_text).strip()
-    _learned_step2 = _find_session_learned_response(sess, _orig_prob_step2)
-    if _learned_step2:
+    _learned_step2, _stored_intent_step2 = _find_session_learned_response_pair(
+        sess, _orig_prob_step2, cur_intent=_cur_intent_step2
+    )
+    _force_num_step2 = _is_ask_number_intent(_stored_intent_step2 or _cur_intent_step2)
+    if _learned_step2 and not _force_num_step2:
+        # Réponse apprise disponible ET pas besoin de numéro → répondre directement
         bot_resp = _localize_response(_learned_step2, sess.get("collected_entities"))
         sess["history"].append(("bot", bot_resp))
         sess["stage"]          = "initial"
@@ -814,6 +943,22 @@ def chat():
                         "session_ended": False,
                         "analysis": _build_analysis(nlu_result, {},
                                                     collected_entities=sess.get("collected_entities"))})
+    elif _learned_step2 and _force_num_step2:
+        # Réponse apprise mais numéro requis → demander le numéro d'abord
+        _ask_num_s2 = getattr(Config, "ASK_REQUEST_NUMBER_MSG",
+                               "أعطيني رقم الطلب أو المعاملة باش نكمل معك.")
+        sess["stage"] = "waiting_for_request_number"
+        if not sess.get("pending_intent"):
+            sess["pending_intent"] = _stored_intent_step2 or _cur_intent_step2
+        if not sess.get("original_problem"):
+            sess["original_problem"] = _orig_prob_step2
+        sess["history"].append(("bot", _ask_num_s2))
+        logger.info(
+            f"[{sid}] Réponse apprise (step2) mais numéro requis → demande numéro "
+            f"(stored_intent='{_stored_intent_step2}')"
+        )
+        return jsonify({"bot_response": _ask_num_s2, "transferred": False,
+                        "session_ended": False, "analysis": {}})
 
     # Construire la requête : problème original + réponse clarification
     enriched_query = _build_enriched_query(sess, user_text)
@@ -871,15 +1016,18 @@ def chat():
 
     if rag_escalate:
         _chk_esc_intent = (sess.get("pending_intent") or active_intent or "").strip()
-        _force_num_esc  = _is_ask_number_intent(_chk_esc_intent)
 
-        # Réponse apprise ? → répondre directement (pour TOUS les intents, y compris
-        # مشكلة في الدفع, اعتراض على الفاتورة, انقطاع الانترنات, تأخير في التركيب)
-        # Le bot a déjà appris la réponse → court-circuite le transfert ET la demande de numéro
+        # Réponse apprise ? → répondre directement SAUF pour les 4 intents à numéro obligatoire
+        # (مشكلة في الدفع, اعتراض على الفاتورة, انقطاع الانترنات, تأخير في التركيب).
+        # Pour ces intents : demander le numéro en premier → la réponse apprise sera donnée
+        # à l'étape waiting_for_request_number (comportement attendu).
         _orig_prob_p4 = (sess.get("original_problem") or
                          sess.get("last_transferred_problem") or user_text).strip()
-        _learned_p4 = _find_session_learned_response(sess, _orig_prob_p4)
-        if _learned_p4:
+        _learned_p4, _stored_intent_p4 = _find_session_learned_response_pair(
+            sess, _orig_prob_p4, cur_intent=_chk_esc_intent
+        )
+        _force_num_esc = _is_ask_number_intent(_stored_intent_p4 or _chk_esc_intent)
+        if _learned_p4 and not _force_num_esc:
             bot_resp = _localize_response(_learned_p4, sess.get("collected_entities"))
             sess["history"].append(("bot", bot_resp))
             sess["stage"]          = "initial"
@@ -893,6 +1041,7 @@ def chat():
             })
 
         # 4 intents à numéro obligatoire → demander le numéro au lieu de transférer
+        # (la réponse apprise sera donnée après que l'user fournit le numéro)
         if _force_num_esc:
             _ask_num = getattr(Config, "ASK_REQUEST_NUMBER_MSG",
                                "أعطيني رقم الطلب أو المعاملة باش نكمل معك.")
@@ -913,6 +1062,7 @@ def chat():
             session_id=sid, history=sess["history"],
             user_last_text=user_text, nlu_result=nlu_result,
             rag_confidence=rag_conf,
+            original_problem=(sess.get("original_problem") or user_text),
         )
         sess["history"].append(("bot", bot_resp))
         sess["stage"]          = "initial"
@@ -983,10 +1133,13 @@ def chat():
     )
     _chk_loop = (sess.get("pending_intent") or active_intent or "").strip()
     if last_bot_resp and bot_resp.strip() == last_bot_resp.strip() and not _is_no_transfer_intent(_chk_loop):
-        _orig_prob_p5 = (sess.get("original_problem") or
-                         sess.get("last_transferred_problem") or user_text).strip()
-        _learned_p5 = _find_session_learned_response(sess, _orig_prob_p5)
-        if _learned_p5:
+        _orig_prob_p5  = (sess.get("original_problem") or
+                          sess.get("last_transferred_problem") or user_text).strip()
+        _learned_p5, _stored_intent_p5 = _find_session_learned_response_pair(
+            sess, _orig_prob_p5, cur_intent=_chk_loop
+        )
+        _force_num_p5  = _is_ask_number_intent(_stored_intent_p5 or _chk_loop)
+        if _learned_p5 and not _force_num_p5:
             bot_resp = _localize_response(_learned_p5, sess.get("collected_entities"))
             sess["history"].append(("bot", bot_resp))
             sess["stage"]          = "initial"
@@ -997,6 +1150,19 @@ def chat():
                             "session_ended": False,
                             "analysis": _build_analysis(nlu_result, {},
                                                         collected_entities=sess.get("collected_entities"))})
+        elif _learned_p5 and _force_num_p5:
+            # Réponse apprise mais numéro requis → demander d'abord le numéro
+            _ask_num_p5 = getattr(Config, "ASK_REQUEST_NUMBER_MSG",
+                                  "أعطيني رقم الطلب أو المعاملة باش نكمل معك.")
+            sess["stage"] = "waiting_for_request_number"
+            if not sess.get("pending_intent"):
+                sess["pending_intent"] = active_intent
+            if not sess.get("original_problem"):
+                sess["original_problem"] = user_text
+            sess["history"].append(("bot", _ask_num_p5))
+            logger.info(f"[{sid}] Réponse apprise (loop detection) mais numéro requis → demande numéro")
+            return jsonify({"bot_response": _ask_num_p5, "transferred": False,
+                            "session_ended": False, "analysis": {}})
         sess["transferred"] = True
         sess["last_transferred_problem"] = sess.get("original_problem") or user_text
         bot_resp = Config.TRANSFER_MESSAGE
@@ -1004,6 +1170,7 @@ def chat():
             session_id=sid, history=sess["history"],
             user_last_text=user_text, nlu_result=nlu_result,
             rag_confidence=rag_conf,
+            original_problem=(sess.get("original_problem") or user_text),
         )
         sess["history"].append(("bot", bot_resp))
         sess["stage"]          = "initial"
@@ -1268,6 +1435,17 @@ def voice():
             sess["solution_given"] = False
             return jsonify({"transcript": transcript, "bot_response": thanks_resp, "session_ended": True, "analysis": {}})
 
+        # Suivi court vocal après solution (ex: "65", numéro de demande)
+        import re as _re_sol_v
+        _is_num_followup_v = bool(_re_sol_v.match(r'^\d[\d\s]*$', transcript.strip()))
+        if sess.get("solution_given") and (_is_num_followup_v or len(transcript.strip()) <= 6):
+            sess["history"].append(("user", transcript))
+            thanks_resp = Config.THANKS_MESSAGE
+            sess["history"].append(("bot", thanks_resp))
+            sess["stage"]          = "waiting_greeting"
+            sess["solution_given"] = False
+            return jsonify({"transcript": transcript, "bot_response": thanks_resp, "session_ended": True, "analysis": {}})
+
         nlu_result   = nlu.analyze(transcript)
         intent       = nlu_result.get("intent", "")
         service_type = nlu_result.get("entities", {}).get("service_type", "")
@@ -1283,8 +1461,10 @@ def voice():
 
         if stage == "initial":
             # ── Apprentissage éphémère vocal : réponse déjà apprise dans cette session ──
-            _force_num_init_v = _is_ask_number_intent(intent.strip())
-            _session_resp_v = _find_session_learned_response(sess, transcript)
+            _session_resp_v, _stored_intent_init_v = _find_session_learned_response_pair(
+                sess, transcript, cur_intent=intent.strip()
+            )
+            _force_num_init_v = _is_ask_number_intent(_stored_intent_init_v or intent.strip())
             if _session_resp_v and not _force_num_init_v:
                 bot_resp_v = _localize_response(_session_resp_v, sess.get("collected_entities"))
                 sess["history"].append(("bot", bot_resp_v))
@@ -1304,6 +1484,25 @@ def voice():
                         collected_entities=sess.get("collected_entities"),
                     ),
                 })
+            elif _session_resp_v and _force_num_init_v:
+                # Réponse apprise mais numéro requis → demander d'abord le numéro
+                _ask_num_init_v = getattr(Config, "ASK_REQUEST_NUMBER_MSG",
+                                          "أعطيني رقم الطلب أو المعاملة باش نكمل معك.")
+                sess["stage"]            = "waiting_for_request_number"
+                sess["pending_intent"]   = _stored_intent_init_v or intent
+                sess["original_problem"] = transcript
+                sess["history"].append(("bot", _ask_num_init_v))
+                logger.info(
+                    f"[{sid}] (vocal) Réponse apprise mais numéro requis → demande numéro (initial) "
+                    f"(stored_intent='{_stored_intent_init_v}')"
+                )
+                return jsonify({
+                    "transcript":   transcript,
+                    "bot_response": _ask_num_init_v,
+                    "transferred":  False,
+                    "session_ended": False,
+                    "analysis":     {},
+                })
 
             clari = response_eng.find_clarification_question(
                 transcript, nlu_intent=intent, nlu_service=service_type
@@ -1315,8 +1514,11 @@ def voice():
 
             # ── Vérifier réponse apprise avant tout transfert vocal ────────────
             if voice_intent_unknown or voice_rag_gate_failed:
-                _learned_unk_v = _find_session_learned_response(sess, transcript)
-                if _learned_unk_v:
+                _learned_unk_v, _stored_intent_unk_v = _find_session_learned_response_pair(
+                    sess, transcript, cur_intent=intent
+                )
+                _force_num_unk_v = _is_ask_number_intent(_stored_intent_unk_v or intent)
+                if _learned_unk_v and not _force_num_unk_v:
                     bot_resp_v = _learned_unk_v
                     sess["stage"]          = "initial"
                     sess["solution_given"] = True
@@ -1330,6 +1532,24 @@ def voice():
                         "bot_response": bot_resp_v,
                         "transferred":  False,
                         "analysis":     _build_analysis(nlu_result, {}),
+                    })
+                elif _learned_unk_v and _force_num_unk_v:
+                    _ask_num_unk_v = getattr(Config, "ASK_REQUEST_NUMBER_MSG",
+                                             "أعطيني رقم الطلب أو المعاملة باش نكمل معك.")
+                    sess["stage"]            = "waiting_for_request_number"
+                    sess["pending_intent"]   = _stored_intent_unk_v or intent
+                    sess["original_problem"] = transcript
+                    sess["history"].append(("bot", _ask_num_unk_v))
+                    logger.info(
+                        f"[{sid}] (vocal) Réponse apprise (cas inconnu) mais numéro requis → demande numéro "
+                        f"(stored_intent='{_stored_intent_unk_v}')"
+                    )
+                    return jsonify({
+                        "transcript":   transcript,
+                        "bot_response": _ask_num_unk_v,
+                        "transferred":  False,
+                        "session_ended": False,
+                        "analysis":     {},
                     })
 
             if voice_intent_unknown and voice_rag_gate_failed:
@@ -1345,6 +1565,7 @@ def voice():
                     session_id=sid, history=sess["history"],
                     user_last_text=transcript, nlu_result=nlu_result,
                     rag_confidence=clari["confidence"],
+                    original_problem=(sess.get("original_problem") or transcript),
                 )
                 sess["history"].append(("bot", bot_resp_v))
                 sess["stage"]          = "initial"
@@ -1377,6 +1598,7 @@ def voice():
                     session_id=sid, history=sess["history"],
                     user_last_text=transcript, nlu_result=nlu_result,
                     rag_confidence=clari["confidence"],
+                    original_problem=(sess.get("original_problem") or transcript),
                 )
                 sess["history"].append(("bot", bot_resp_v))
                 sess["stage"]          = "initial"
@@ -1502,6 +1724,7 @@ def voice():
                 session_id=sid, history=sess["history"],
                 user_last_text=transcript, nlu_result=nlu_result,
                 rag_confidence=0.0,
+                original_problem=(sess.get("original_problem") or transcript),
             )
             sess["history"].append(("bot", bot_resp))
             sess["stage"]          = "initial"
@@ -1575,15 +1798,17 @@ def voice():
                             "transferred": False, "session_ended": False, "analysis": {}})
 
         # ── Apprentissage éphémère : check avant RAG (voice) ─────────────────
-        # Si une réponse apprise existe → l'utiliser directement (TOUS les intents)
-        # مشكلة في الدفع, اعتراض على الفاتورة, انقطاع الانترنات, تأخير في التركيب inclus
-        _force_num_s2_v  = _is_ask_number_intent(
-            (sess.get("pending_intent") or active_intent or "").strip()
-        )
+        # Même logique que le canal texte :
+        # EXCEPTION pour les 4 intents à numéro obligatoire → la réponse apprise
+        # est donnée après la saisie du numéro (waiting_for_request_number).
+        _cur_intent_s2_v = (sess.get("pending_intent") or active_intent or "").strip()
         _orig_prob_s2_v  = (sess.get("original_problem") or
                             sess.get("last_transferred_problem") or transcript).strip()
-        _learned_s2_v    = _find_session_learned_response(sess, _orig_prob_s2_v)
-        if _learned_s2_v:
+        _learned_s2_v, _stored_intent_s2_v = _find_session_learned_response_pair(
+            sess, _orig_prob_s2_v, cur_intent=_cur_intent_s2_v
+        )
+        _force_num_s2_v = _is_ask_number_intent(_stored_intent_s2_v or _cur_intent_s2_v)
+        if _learned_s2_v and not _force_num_s2_v:
             bot_resp = _localize_response(_learned_s2_v, sess.get("collected_entities"))
             sess["history"].append(("bot", bot_resp))
             sess["stage"]          = "initial"
@@ -1594,6 +1819,22 @@ def voice():
                             "transferred": False, "session_ended": False,
                             "analysis": _build_analysis(nlu_result, {},
                                                         collected_entities=sess.get("collected_entities"))})
+        elif _learned_s2_v and _force_num_s2_v:
+            # Réponse apprise mais numéro requis → demander le numéro d'abord
+            _ask_num_s2_v = getattr(Config, "ASK_REQUEST_NUMBER_MSG",
+                                    "أعطيني رقم الطلب أو المعاملة باش نكمل معك.")
+            sess["stage"] = "waiting_for_request_number"
+            if not sess.get("pending_intent"):
+                sess["pending_intent"] = _stored_intent_s2_v or _cur_intent_s2_v
+            if not sess.get("original_problem"):
+                sess["original_problem"] = _orig_prob_s2_v
+            sess["history"].append(("bot", _ask_num_s2_v))
+            logger.info(
+                f"[{sid}] (vocal) Réponse apprise (step2) mais numéro requis → demande numéro "
+                f"(stored_intent='{_stored_intent_s2_v}')"
+            )
+            return jsonify({"transcript": transcript, "bot_response": _ask_num_s2_v,
+                            "transferred": False, "session_ended": False, "analysis": {}})
 
         enriched   = _build_enriched_query(sess, transcript)
         rag_result = response_eng.find_response(
@@ -1638,15 +1879,17 @@ def voice():
 
         # Transfert humain si le RAG ne trouve pas de réponse fiable (voice)
         if rag_escalate:
-            _chk_esc_v      = (sess.get("pending_intent") or active_intent or "").strip()
-            _force_num_esc_v = _is_ask_number_intent(_chk_esc_v)
+            _chk_esc_v = (sess.get("pending_intent") or active_intent or "").strip()
 
-            # Réponse apprise ? → répondre directement (TOUS les intents)
-            # Même pour مشكلة في الدفع, اعتراض على الفاتورة, انقطاع الانترنات, تأخير في التركيب
+            # Réponse apprise ? → répondre directement SAUF pour les 4 intents à numéro.
+            # (même règle que le canal texte — cohérence entre les deux modes)
             _orig_prob_v4 = (sess.get("original_problem") or
                              sess.get("last_transferred_problem") or transcript).strip()
-            _learned_v4 = _find_session_learned_response(sess, _orig_prob_v4)
-            if _learned_v4:
+            _learned_v4, _stored_intent_v4 = _find_session_learned_response_pair(
+                sess, _orig_prob_v4, cur_intent=_chk_esc_v
+            )
+            _force_num_esc_v = _is_ask_number_intent(_stored_intent_v4 or _chk_esc_v)
+            if _learned_v4 and not _force_num_esc_v:
                 bot_resp = _localize_response(_learned_v4, sess.get("collected_entities"))
                 sess["history"].append(("bot", bot_resp))
                 sess["stage"]          = "initial"
@@ -1662,7 +1905,8 @@ def voice():
                                                      collected_entities=sess.get("collected_entities")),
                 })
 
-            # 4 intents à numéro obligatoire → demander le numéro au lieu de transférer
+            # 4 intents à numéro obligatoire → demander le numéro d'abord
+            # (la réponse apprise sera donnée à waiting_for_request_number)
             if _force_num_esc_v:
                 _ask_num_v = getattr(Config, "ASK_REQUEST_NUMBER_MSG",
                                      "أعطيني رقم الطلب أو المعاملة باش نكمل معك.")
@@ -1683,6 +1927,7 @@ def voice():
                 session_id=sid, history=sess["history"],
                 user_last_text=transcript, nlu_result=nlu_result,
                 rag_confidence=rag_conf,
+                original_problem=(sess.get("original_problem") or transcript),
             )
             sess["history"].append(("bot", bot_resp))
             sess["stage"]          = "initial"
@@ -1741,8 +1986,11 @@ def voice():
                 and not _is_no_transfer_intent(_chk_loop_v)):
             _orig_prob_v5 = (sess.get("original_problem") or
                              sess.get("last_transferred_problem") or transcript).strip()
-            _learned_v5 = _find_session_learned_response(sess, _orig_prob_v5)
-            if _learned_v5:
+            _learned_v5, _stored_intent_v5 = _find_session_learned_response_pair(
+                sess, _orig_prob_v5, cur_intent=_chk_loop_v
+            )
+            _force_num_v5 = _is_ask_number_intent(_stored_intent_v5 or _chk_loop_v)
+            if _learned_v5 and not _force_num_v5:
                 bot_resp = _localize_response(_learned_v5, sess.get("collected_entities"))
                 sess["history"].append(("bot", bot_resp))
                 sess["stage"]          = "initial"
@@ -1753,6 +2001,18 @@ def voice():
                                 "transferred": False, "session_ended": False,
                                 "analysis": _build_analysis(nlu_result, {},
                                                             collected_entities=sess.get("collected_entities"))})
+            elif _learned_v5 and _force_num_v5:
+                _ask_num_v5 = getattr(Config, "ASK_REQUEST_NUMBER_MSG",
+                                      "أعطيني رقم الطلب أو المعاملة باش نكمل معك.")
+                sess["stage"] = "waiting_for_request_number"
+                if not sess.get("pending_intent"):
+                    sess["pending_intent"] = active_intent
+                if not sess.get("original_problem"):
+                    sess["original_problem"] = transcript
+                sess["history"].append(("bot", _ask_num_v5))
+                logger.info(f"[{sid}] (vocal) Réponse apprise (loop detection) mais numéro requis → demande numéro")
+                return jsonify({"transcript": transcript, "bot_response": _ask_num_v5,
+                                "transferred": False, "session_ended": False, "analysis": {}})
             logger.info(f"[{sid}] BOUCLE DÉTECTÉE (voice) : même réponse → transfert forcé")
             sess["transferred"] = True
             sess["last_transferred_problem"] = sess.get("original_problem") or transcript
@@ -1761,6 +2021,7 @@ def voice():
                 session_id=sid, history=sess["history"],
                 user_last_text=transcript, nlu_result=nlu_result,
                 rag_confidence=rag_conf,
+                original_problem=(sess.get("original_problem") or transcript),
             )
             sess["history"].append(("bot", bot_resp))
             sess["stage"]          = "initial"
@@ -1836,43 +2097,77 @@ def human_response():
         return jsonify({"error": "Réponse vide"}), 400
 
     transfer.resolve_ticket(ticket_id, response)
-    sess      = sessions.get(sid, {})
+
+    # ── Lookup du ticket pour récupérer session_id mobile et last_user_msg ──
+    # Essentiel : le ticket stocke le session_id de l'émetteur (web OU mobile).
+    # Sans ça, le forward vers user_app.py utilise le sid web → session introuvable
+    # côté mobile → problème_text = ticket_id → apprentissage inutilisable.
+    ticket_data        = transfer.get_ticket(ticket_id) if ticket_id else {}
+    ticket_session_id  = ticket_data.get("session_id", "")     # peut être un conv_id Firebase
+    # Priorité : original_problem (plainte initiale) → last_user_msg (fallback)
+    ticket_problem_txt = (ticket_data.get("original_problem") or
+                          ticket_data.get("last_user_msg", ""))
+
+    # Trouver la session web (priorité au sid explicite, fallback sur ticket_session_id)
+    sess      = sessions.get(sid) or sessions.get(ticket_session_id, {})
     history   = sess.get("history", [])
     last_user = next((t for r, t in reversed(history) if r == "user"), "")
 
-    learning.learn_from_human(user_text=last_user, human_response=response, session_id=sid)
+    learning.learn_from_human(user_text=last_user or ticket_problem_txt,
+                               human_response=response, session_id=sid)
     if learning.should_retrain():
         response_eng.reload_index()
         learning.reset_counter()
 
-    # ── Apprentissage éphémère (session uniquement, non persistant) ──────────
-    # Stocké en mémoire → oublié dès la fermeture de session / redémarrage app.
-    problem_text = sess.get("last_transferred_problem") or last_user
+    # ── Apprentissage éphémère (en mémoire, remis à zéro au redémarrage) ──────
+    # Priorité : last_transferred_problem (toujours le texte exact du client)
+    # → ticket_problem_txt (récupéré depuis la file de tickets)
+    # → dernier message utilisateur de l'historique de session
+    problem_text = (
+        sess.get("last_transferred_problem")
+        or ticket_problem_txt
+        or last_user
+    )
     if problem_text:
-        _session_learn_store(sess, problem_text, response)
+        # Extraire l'intent associé au problème.
+        # Priorité 1 : pending_intent de la session (peut être vide si déjà effacé)
+        # Priorité 2 : intent stocké dans le TICKET (toujours présent, très fiable)
+        _learn_intent = (
+            (sess.get("pending_intent") or "").strip()
+            or (ticket_data.get("intent", "") or "").strip().replace("unknown", "").strip()
+        )
+        _session_learn_store(sess, problem_text, response, intent=_learn_intent)
+        logger.info(
+            f"[human_response] ✅ Bot apprend : "
+            f"'{problem_text[:60]}' → '{response[:60]}' (intent='{_learn_intent}')"
+        )
     else:
         logger.warning(
-            f"[Session Learning] Impossible de mémoriser : problem_text vide "
-            f"(last_transferred_problem='{sess.get('last_transferred_problem')}' "
-            f"last_user='{last_user}')"
+            f"[human_response] ⚠️  problem_text vide — "
+            f"ticket_id={ticket_id} | sid={sid} | ticket_sess={ticket_session_id}"
         )
 
-    # Réinitialiser la session pour permettre de continuer la conversation et tester
-    sess["solution_given"]   = False
-    sess["transferred"]      = False
-    sess["stage"]            = "initial"
-    sess["pending_intent"]   = ""
-    sess["original_problem"] = ""   # nettoyé : le prochain message est un nouveau problème
+    # Réinitialiser la session web pour permettre de continuer la conversation
+    if sess:
+        sess["solution_given"]           = True   # active le remerciement au prochain tour
+        sess["transferred"]              = False
+        sess["stage"]                    = "initial"
+        sess["pending_intent"]           = ""
+        sess["original_problem"]         = ""
+        sess["last_transferred_problem"] = ""
 
     # ── Transmettre la réponse à user_app.py (port 5001) ─────────────────────
-    # CRITIQUE : user_app.py gère les sessions du bot mobile. Sans ce forward,
-    # le bot ne reçoit jamais la réponse de l'agent → il ne l'apprend pas et
-    # l'utilisateur ne la voit pas dans son interface mobile.
+    # CRITIQUE : on passe le session_id du TICKET (mobile = conv_id Firebase)
+    # et le problem_text réel pour que user_app.py trouve la bonne session et
+    # mémorise une correspondance utilisable.
     import urllib.request, urllib.error as _ue
+    _mobile_sid = ticket_session_id or sid   # préférer l'ID Firebase si dispo
     _user_app_payload = json.dumps({
-        "ticket_id":  ticket_id,
-        "response":   response,
-        "session_id": sid,
+        "ticket_id":    ticket_id,
+        "response":     response,
+        "session_id":   _mobile_sid,
+        "problem_text": problem_text,   # texte réel du problème pour l'apprentissage
+        "intent":       _learn_intent,  # intent fiable extrait du ticket (intent-boost)
     }).encode("utf-8")
     try:
         _req = urllib.request.Request(
