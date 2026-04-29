@@ -44,11 +44,12 @@ dependencies:
   audioplayers: ^6.0.0
 
   # Enregistrement audio — pour envoyer l'audio au backend Whisper (meilleur STT darija)
-  record: ^5.1.2
+  record: ^6.2.0
 
   # Répertoire temporaire pour fichiers audio
   path_provider: ^2.1.4
-
+dependency_overrides:
+  record_linux: ^1.3.0
 dev_dependencies:
   flutter_test:
     sdk: flutter
@@ -69,3 +70,4 @@ flutter:
   assets:
     - assets/logo_tt.png
     - assets/icon/icon.png
+

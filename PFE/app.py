@@ -551,6 +551,25 @@ def chat():
         intent_unknown = intent in ("غير محدد", "unknown", "")
         rag_gate_failed = not clari["question"]   # gate RAW < 0.50 dans find_clarification_question
 
+        # ── Vérifier si ce problème a déjà été résolu par un agent (cas inconnu) ──
+        # Avant tout transfert (inconnu ou RAG faible), chercher une réponse apprise.
+        if intent_unknown or rag_gate_failed:
+            _learned_unk = _find_session_learned_response(sess, user_text)
+            if _learned_unk:
+                bot_resp = _learned_unk
+                sess["stage"]          = "initial"
+                sess["solution_given"] = True
+                sess["history"].append(("bot", bot_resp))
+                logger.info(
+                    f"[{sid}] Réponse apprise (cas inconnu évité) : "
+                    f"'{user_text[:50]}' → '{bot_resp[:60]}'"
+                )
+                return jsonify({
+                    "bot_response": bot_resp,
+                    "transferred":  False,
+                    "analysis":     _build_analysis(nlu_result, {}),
+                })
+
         if intent_unknown and rag_gate_failed:
             logger.info(
                 f"[{sid}] Problème NON RECONNU "
@@ -1294,6 +1313,25 @@ def voice():
             voice_intent_unknown = intent in ("غير محدد", "unknown", "")
             voice_rag_gate_failed = not clari["question"]
 
+            # ── Vérifier réponse apprise avant tout transfert vocal ────────────
+            if voice_intent_unknown or voice_rag_gate_failed:
+                _learned_unk_v = _find_session_learned_response(sess, transcript)
+                if _learned_unk_v:
+                    bot_resp_v = _learned_unk_v
+                    sess["stage"]          = "initial"
+                    sess["solution_given"] = True
+                    sess["history"].append(("bot", bot_resp_v))
+                    logger.info(
+                        f"[{sid}] (vocal) Réponse apprise (cas inconnu évité) : "
+                        f"'{transcript[:50]}' → '{bot_resp_v[:60]}'"
+                    )
+                    return jsonify({
+                        "transcript":   transcript,
+                        "bot_response": bot_resp_v,
+                        "transferred":  False,
+                        "analysis":     _build_analysis(nlu_result, {}),
+                    })
+
             if voice_intent_unknown and voice_rag_gate_failed:
                 logger.info(
                     f"[{sid}] (vocal) Problème NON RECONNU "
@@ -1866,26 +1904,41 @@ def human_response():
 # Couvre spécifiquement les 5 types de problèmes gérés par apprentissage :
 #   تغيير الخدمة, مشكلة في الدفع, اعتراض على الفاتورة, انقطاع الانترنات, تأخير في التركيب
 _AGENT_STT_PROMPT = (
-    "وكيل دعم فني في تليكوم تونس يشرح حل لمشكلة بالدارجة التونسية. "
-    "الوكيل يعطي تعليمات وحلول واضحة. "
-    # ── تغيير الخدمة ──────────────────────────────────────────
-    "تغيير الخدمة: الطلب مسجل، راح يتغير الباقة، فريق التقني باش يتصل بيك. "
-    # ── مشكلة في الدفع ────────────────────────────────────────
-    "مشكلة الدفع: الدفع مسجل صح، العملية ناجحة، المبلغ تحصل، ما فماش مشكلة في الدفع. "
-    # ── اعتراض على الفاتورة ───────────────────────────────────
-    "اعتراض الفاتورة: الفاتورة صحيحة، المبلغ محسوب بالضبط، ما فماش خطأ في الفاتورة، "
-    "هذا الاستهلاك تاعك الحقيقي، راح نفتح ملف اعتراض. "
-    # ── انقطاع الانترنات ──────────────────────────────────────
-    "انقطاع الانترنت: فريق التدخل التقني باش يجي، المشكل راح يتسوى في ظرف، "
-    "ما فماش انقطاع في منطقتك، المنطقة تاعتك مغطاة، "
-    "راح نعمل إعادة تشغيل على الخط تاعك. "
-    # ── تأخير في التركيب ──────────────────────────────────────
-    "تأخير التركيب: الطلب مسجل، التقني باش يجي في الموعد، "
-    "ما فماش تأخير من عندنا، الموعد محدد. "
+    # ── contexte général ──────────────────────────────────────
+    "وكيل دعم تقني في تليكوم تونس يشرح الحل بالدارجة التونسية. "
+    # ── تغيير الخدمة ─────────────────────────────────────────
+    "تغيير الخدمة: 'نعملك تحويل من ADSL لفيبر'، 'نرفعلك السرعة'، "
+    "'نبدّل باقتك'، 'نحدّث الاشتراك'، 'الخدمة الجديدة تبدأ من بكري'، "
+    "'يلزمك تمشي للوكالة تجيب بطاقتك'، 'نسجّل طلب التغيير'، "
+    # ── مشكلة في التجوال ─────────────────────────────────────
+    "مشكلة في التجوال: 'نفعّل التجوال على خطك'، 'روامينق موش مفعّل'، "
+    "'يلزمك تتصل بـ 1298 قبل السفر'، 'نبعث إشعار التفعيل'، "
+    "'التجوال يخدم في أوروبا والمغرب'، 'السرعة في الخارج محدودة'، "
+    # ── اعتراض على الفاتورة ──────────────────────────────────
+    "اعتراض على الفاتورة: 'نراجع الفاتورة معك'، 'المبلغ فيه غلطة'، "
+    "'نعملك تخفيض'، 'نرجعلك الفرق'، 'الفاتورة فيها استهلاك زيادة'، "
+    "'نفتح ملف اعتراض'، 'نصحح الفاتورة خلال 48 ساعة'، "
+    "'ما فيهاش مشكلة نصفّي معك الحساب'، 'الفاتورة صحيحة لأن...'، "
+    # ── انقطاع الانترنات ─────────────────────────────────────
+    "انقطاع الانترنات: 'نبعث فريق تقني يجيك'، 'عيطلك التقني اليوم'، "
+    "'علاش ما تعيّد تشغيل الباكس'، 'الكابل الخارجي مقطوع'، "
+    "'المشكل في البنية التحتية'، 'نسجّل شكوى قطع الانترنت'، "
+    "'الخط يرجع يخدم باش نصلح العطب'، 'نتابع معك الموضوع'، "
+    # ── تأخير في التركيب ─────────────────────────────────────
+    "تأخير في التركيب: 'موعد التقني يوم الخميس'، 'التقني يجيك من 9 لـ 12'، "
+    "'نحجزلك موعد جديد'، 'الطلب مسجّل عندنا'، 'التركيب يأخذ يومين'، "
+    "'نبعث تقني للتركيب'، 'نتابع ملف التركيب'، 'رقم طلبك هو'، "
+    # ── مشاكل أخرى / غير معروفة ──────────────────────────────
+    "مشاكل أخرى: 'نسجّل مشكلتك'، 'نحيلك للقسم المختص'، "
+    "'نرجع نتصل بيك خلال 24 ساعة'، 'الحل هو'، 'يلزمك'، 'اش نعملوا'، "
+    # ── مفردات أرقام وأسماء أماكن ────────────────────────────
+    "رقم الطلب، رقم المعاملة، رقم الخط، رقم الحساب. "
+    "صفاقس، سوسة، تونس، نابل، المنستير، بنزرت، قفصة، قابس، أريانة، منوبة، "
+    "مدنين، تطاوين، القيروان، سيدي بوزيد، زغوان، سليانة، الكاف، جندوبة، باجة، "
+    "توزر، قبلي، المهدية. "
     # ── كلمات شائعة في ردود الوكلاء ─────────────────────────
     "الكلمات الشائعة: ياسر، برشا، مش مشكلة، حتى مشكلة، "
-    "ربي يعطيك الصحة، مشكور، شكرن على صبرك. "
-    "أسماء مدن: تونس، سوسة، صفاقس، المنستير، بنزرت، نابل، قابس."
+    "ربي يعطيك الصحة، مشكور، شكراً على صبرك، نهاركم سعيد."
 )
 
 @app.route("/api/voice_agent", methods=["POST"])
@@ -1916,20 +1969,26 @@ def voice_agent():
             tmp_path = tmp.name
 
         # Paramètres STT optimisés pour la voix de l'agent
-        segments, _ = stt_model.transcribe(
+        # multi-température → évite la troncature sur longues réponses
+        segments, info = stt_model.transcribe(
             tmp_path,
             language=Config.STT_LANGUAGE,          # "ar"
             beam_size=7,                            # Plus élevé → meilleure précision
-            vad_filter=False,                       # DÉSACTIVÉ — évite la coupure agressive des segments
+            best_of=5,                              # 5 candidats → choisir le meilleur
+            vad_filter=False,                       # DÉSACTIVÉ — évite la coupure agressive
             initial_prompt=_AGENT_STT_PROMPT,       # Prompt spécialisé agent
-            temperature=0.0,                        # Déterministe → transcription complète
+            temperature=[0.0, 0.2, 0.4],           # Multi-temp → réduit troncature & hallucinations
             condition_on_previous_text=True,        # Continuité entre segments
-            no_speech_threshold=0.8,                # Haute tolérance → Whisper ignore peu de segments
+            no_speech_threshold=0.9,                # Très haute tolérance → moins de segments rejetés
+            compression_ratio_threshold=2.8,        # Filtre transcriptions répétitives/hallucinées
         )
         transcript = " ".join(s.text.strip() for s in segments).strip()
         os.unlink(tmp_path)
 
-        logger.info(f"[voice_agent] STT agent → '{transcript[:80]}'")
+        logger.info(
+            f"[voice_agent] STT agent → '{transcript[:120]}' "
+            f"[lang={info.language} prob={info.language_probability:.2f}]"
+        )
         return jsonify({"transcript": transcript})
 
     except Exception as e:

@@ -688,10 +688,30 @@ def _update_entities(sess: dict, nlu_result: dict, user_text: str = ""):
     Met à jour les entités collectées depuis le résultat NLU.
     Si le NLU ne détecte pas de wilaya/délégation, tente de les extraire
     directement depuis le texte de l'utilisateur (regex).
+
+    RÈGLE ANTI-ÉCRASEMENT : si le NLU n'a pas trouvé de localisation
+    explicite dans le texte courant (location_explicit=False), on ne
+    remplace JAMAIS une wilaya/délégation déjà correctement collectée
+    lors d'un tour précédent. Cela évite que le modèle ML écrase
+    "تطاوين" (extrait du 1er message) par "تونس" (valeur par défaut ML)
+    quand l'user répond juste "فيكس" ou un chiffre.
     """
     ents = nlu_result.get("entities", {})
     collected = sess.setdefault("collected_entities", {})
+
+    # Détecter si la localisation a été trouvée EXPLICITEMENT dans le texte courant
+    # (flag positionné par NLU._fix_location_from_text)
+    location_explicit = ents.get("location_explicit")  # True / False / None (absent)
+
     for k, v in ents.items():
+        if k == "location_explicit":
+            continue   # flag interne — ne pas stocker dans collected_entities
+        # Pour wilaya et délégation : ne pas écraser une valeur déjà collectée
+        # si la localisation n'est PAS explicite dans le tour courant.
+        if k in ("wilaya", "delegation"):
+            if location_explicit is False and collected.get(k):
+                # On préserve la localisation correcte accumulée
+                continue
         if v:
             collected[k] = v
 
@@ -891,6 +911,21 @@ def process_user_message(conv_session_id: str, user_text: str) -> dict:
             return {"bot_response": hint, "session_ended": False,
                     "transferred": False, "statut": "en_cours"}
 
+    # ── Salutation reçue hors stage waiting_greeting ─────────────────────────
+    # Cas : l'app mobile (ou le web) envoie "عسلامة" alors que le stage est
+    # "initial" ou autre — cela arrive quand :
+    #   1. L'app mobile affiche le greeting local sans l'envoyer au serveur,
+    #      puis l'utilisateur tape lui-même "عسلامة".
+    #   2. L'utilisateur re-salue en milieu ou début de session.
+    # Sans ce guard, NLU traite "عسلامة" → intent inconnu → transfert injustifié.
+    if stage in ("initial",) and _is_greeting(user_text) and not sess.get("transferred"):
+        sess["history"].append(("user", user_text))
+        bot_resp = Config.GREETING_MESSAGE
+        sess["history"].append(("bot", bot_resp))
+        # On reste en "initial" : l'utilisateur peut enchaîner avec son problème
+        return {"bot_response": bot_resp, "session_ended": False,
+                "transferred": False, "statut": "en_cours"}
+
     # ── Remerciement ──────────────────────────────────────
     if _is_thanks(user_text) and sess.get("solution_given"):
         sess["history"].append(("user", user_text))
@@ -1081,6 +1116,27 @@ def process_user_message(conv_session_id: str, user_text: str) -> dict:
         # Problème non reconnu → transfert
         intent_unknown  = intent in ("غير محدد", "unknown", "")
         rag_gate_failed = not clari["question"]
+
+        # ── Vérifier si ce problème a déjà été résolu par un agent humain ──────
+        # Pour les cas inconnus (ou RAG trop faible), avant de transférer à nouveau,
+        # on cherche dans le store global si une réponse apprise correspond.
+        # Cela évite un transfert inutile pour des problèmes déjà vus et résolus.
+        if intent_unknown or rag_gate_failed:
+            _learned_unknown = _find_session_learned(sess, user_text)
+            if _learned_unknown:
+                bot_resp = _learned_unknown
+                sess["stage"]          = "initial"
+                sess["solution_given"] = True
+                sess["history"].append(("bot", bot_resp))
+                logger.info(
+                    f"[{conv_session_id}] Réponse apprise (cas inconnu évité) : "
+                    f"'{user_text[:50]}' → '{bot_resp[:60]}'"
+                )
+                return {"bot_response": bot_resp, "session_ended": False,
+                        "transferred": False, "statut": "resolue",
+                        "sujet": intent or sess.get("pending_intent", ""),
+                        "service_type": service_type}
+
         if intent_unknown and rag_gate_failed:
             bot_resp = Config.TRANSFER_MESSAGE
             transfer.create_ticket(session_id=conv_session_id,
@@ -1854,6 +1910,36 @@ def api_mobile_chat():
     if uid:
         session["user_id"] = uid
 
+    # ── Stamper le user_id dans l'état de conversation (nécessaire pour
+    #    api_internal_agent_reply qui écrit la réponse agent dans le chat) ──
+    _mobile_state = _get_conv_state(conv_id)
+    if uid and not _mobile_state.get("user_id"):
+        _mobile_state["user_id"] = uid
+
+    # ── Auto-gestion du stage "waiting_greeting" pour l'app mobile ─────────
+    # L'app mobile affiche le message de bienvenue localement sans passer par
+    # le bot. On doit donc faire avancer l'état du serveur vers "initial".
+    #
+    # RÈGLE :
+    #   • Si le message de l'utilisateur EST déjà une salutation (عسلامة…)
+    #     → NE PAS envoyer de salutation silencieuse : on laisse process_user_message
+    #       traiter le message dans le stage "waiting_greeting" normalement.
+    #       (envoyer un 2ᵉ "عسلامة" avant déplacerait le stage vers "initial"
+    #        et le vrai "عسلامة" serait ensuite traité par le NLU → intent inconnu
+    #        → transfert injustifié !)
+    #   • Sinon (premier message = une réclamation directe, ex: "الانترنت مقطوع")
+    #     → envoyer "عسلامة" silencieusement pour passer de "waiting_greeting"
+    #       à "initial", puis traiter le message réel.
+    if _mobile_state.get("stage") == "waiting_greeting":
+        if not _is_greeting(text):
+            # Utilisateur a sauté la salutation → avancer l'état silencieusement
+            try:
+                process_user_message(conv_id, "عسلامة")
+            except Exception:
+                pass  # Non bloquant
+        # Si _is_greeting(text) → on laisse process_user_message traiter le salut
+        # dans le stage "waiting_greeting" directement (comportement web identique)
+
     try:
         result = process_user_message(conv_id, text)
     except Exception as e:
@@ -1865,17 +1951,35 @@ def api_mobile_chat():
     bot_resp   = result.get("bot_response", "")
     new_statut = result.get("statut", "en_cours")
 
-    # Sauvegarder les messages dans Firebase
+    # ── Extraire et enrichir les données NLU (identique à /api/user/chat) ─────
+    _mob_sess_state = user_conv_state.get(conv_id, {})
+    _mob_nlu_data   = _mob_sess_state.get("last_nlu", None)
+    if _mob_nlu_data is not None:
+        _mob_transferred = bool(result.get("transferred"))
+        _mob_nlu_data["escalate"] = _mob_transferred
+        _mob_nlu_data["decision"] = (
+            "escalade_agent_humain" if _mob_transferred else "reponse_automatique"
+        )
+        # Wilaya / délégation finales depuis collected_entities
+        _mob_ce = _mob_sess_state.get("collected_entities", {}) or {}
+        if _mob_ce.get("wilaya"):     _mob_nlu_data["wilaya"]     = _mob_ce["wilaya"]
+        if _mob_ce.get("delegation"): _mob_nlu_data["delegation"] = _mob_ce["delegation"]
+
+    # Sauvegarder les messages dans Firebase (avec NLU data, identique au web)
     if uid and conv_id:
         try:
-            message_add(conv_id, uid, "user", text)
+            message_add(conv_id, uid, "user", text, nlu_data=_mob_nlu_data)
             message_add(conv_id, uid, "bot", bot_resp)
+
+            # Mettre à jour statut, sujet ET service_type (identique à api_chat)
+            _mob_conv = conversation_get(conv_id) or {}
+            new_sujet   = (result.get("sujet")        or "").strip() or _mob_conv.get("sujet", "")
+            new_service = (result.get("service_type") or "").strip() or _mob_conv.get("service_type", "")
             _upd = dict(statut=new_statut)
-            # Ne mettre à jour sujet QUE si le NLU a détecté un intent non vide
-            # → évite d'écraser le vrai sujet par "" à chaque message
-            new_sujet = (result.get("sujet") or "").strip()
             if new_sujet:
                 _upd["sujet"] = new_sujet
+            if new_service:
+                _upd["service_type"] = new_service
             if result.get("transferred"):
                 _upd["was_transferred"] = True
             conversation_update(conv_id, **_upd)
@@ -2050,6 +2154,96 @@ def api_mobile_call_status(conv_id):
     except Exception as e:
         logger.error(f"[api_mobile_call_status] {e}", exc_info=True)
         return jsonify({"ok": False, "error": str(e)}), 500
+
+
+# ══════════════════════════════════════════════════════════
+#  API MOBILE — TTS (Text-to-Speech, sans session Flask)
+#  Même moteur edge-tts que /api/user/tts mais sans @login_required.
+#  Utilisé par l'application Flutter pour avoir la même voix
+#  (ar-TN-ReemNeural) que l'interface web.
+# ══════════════════════════════════════════════════════════
+
+@app.route("/api/mobile/tts", methods=["POST"])
+def api_mobile_tts():
+    """
+    TTS mobile — identique à /api/user/tts mais sans login_required.
+    Accepte {"text": "...", "voice": "..."} ou user_id dans le body.
+    Retourne un fichier audio MP3 (edge-tts ar-TN-ReemNeural).
+    """
+    data  = request.get_json(silent=True) or {}
+    text  = (data.get("text") or "").strip()
+    voice = data.get("voice") or Config.EDGE_TTS_VOICE
+
+    if not text:
+        return jsonify({"error": "Texte vide"}), 400
+
+    try:
+        audio_bytes = _tts_generate(text, voice)
+        return send_file(
+            io.BytesIO(audio_bytes),
+            mimetype="audio/mpeg",
+            as_attachment=False,
+            download_name="response.mp3",
+        )
+    except ImportError:
+        logger.warning("[mobile/tts] edge-tts non installé → TTS indisponible")
+        return jsonify({"error": "TTS non disponible"}), 503
+    except Exception as e:
+        logger.error(f"[mobile/tts] Erreur : {e}", exc_info=True)
+        return jsonify({"error": str(e)}), 500
+
+
+# ══════════════════════════════════════════════════════════
+#  API MOBILE — STT (Speech-to-Text, sans session Flask)
+#  Même moteur Whisper que /api/user/stt mais sans @login_required.
+#  Utilisé par l'application Flutter pour la transcription darija.
+# ══════════════════════════════════════════════════════════
+
+@app.route("/api/mobile/stt", methods=["POST"])
+def api_mobile_stt():
+    """
+    STT mobile — identique à /api/user/stt mais sans login_required.
+    Reçoit un fichier audio (WebM/WAV/MP4) depuis Flutter,
+    le transcrit avec Whisper et renvoie le texte.
+    """
+    if "audio" not in request.files:
+        return jsonify({"error": "Fichier audio manquant"}), 400
+
+    audio_file = request.files["audio"]
+    suffix = ".webm"
+    ct = audio_file.content_type or ""
+    if "wav"  in ct: suffix = ".wav"
+    elif "mp4" in ct or "mp4a" in ct: suffix = ".mp4"
+    elif "ogg" in ct: suffix = ".ogg"
+
+    tmp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+            audio_file.save(tmp.name)
+            tmp_path = tmp.name
+
+        model = _get_whisper()
+        segments, _ = model.transcribe(
+            tmp_path,
+            language=Config.STT_LANGUAGE,
+            beam_size=Config.STT_BEAM_SIZE,
+            vad_filter=Config.STT_VAD_FILTER,
+            initial_prompt=Config.STT_INITIAL_PROMPT,
+        )
+        text = " ".join(seg.text for seg in segments).strip()
+        logger.info(f"[mobile/stt] Transcription : '{text[:80]}'")
+        return jsonify({"text": text})
+
+    except ImportError:
+        logger.warning("[mobile/stt] faster-whisper non installé → STT indisponible")
+        return jsonify({"error": "STT non disponible", "fallback": True}), 503
+    except Exception as e:
+        logger.error(f"[mobile/stt] Erreur : {e}", exc_info=True)
+        return jsonify({"error": str(e)}), 500
+    finally:
+        if tmp_path and os.path.exists(tmp_path):
+            try: os.unlink(tmp_path)
+            except: pass
 
 
 # ══════════════════════════════════════════════════════════
@@ -2896,17 +3090,43 @@ def api_stt():
 #  API VOCAL — STT pour la voix de l'AGENT humain
 # ══════════════════════════════════════════════════════════
 
-# Prompt STT spécialisé : couvre tous les 5 types de problèmes + vocabulaire agent
+# Prompt STT spécialisé : couvre les 5 types de problèmes connus + problèmes inconnus
+# Optimisé pour la darija tunisienne et le vocabulaire des agents TT.
+# ── Stratégie : phrases complètes typiques d'un agent + toutes les expressions
+#    fréquentes → guide Whisper vers la bonne transcription même avec accent régional.
 _AGENT_STT_PROMPT = (
-    "وكيل دعم فني في تليكوم تونس يشرح حل لمشكلة بالدارجة التونسية. "
-    "المشاكل الممكنة: تغيير الخدمة (تبديل الباقة، رفع السرعة، تحديث الاشتراك)، "
-    "مشكلة في الدفع (الدفع ما مشاش، مبلغ مسحوب مرتين، رجوع الفلوس)، "
-    "اعتراض على الفاتورة (فاتورة غالية، مبلغ غلط، تخفيض الفاتورة)، "
-    "انقطاع الانترنات (قطع الانترنت، باكس ما يتصلش، إعادة التشغيل)، "
-    "تأخير في التركيب (موعد التقني، تركيب الخط، تسجيل الشكوى). "
-    "الوكيل يقول: 'اش نعملوا'، 'الحل هو'، 'يلزمك'، 'نسجل طلبك'، 'نبعث تقني'، "
-    "'نرجع الفلوس'، 'نصحح الفاتورة'، 'نعملك تغيير'، 'الموعد'، 'رقم الطلب'، "
-    "صفاقس، سوسة، تونس، نابل، المنستير، بنزرت، قفصة، قابس، أريانة، منوبة."
+    # Contexte général
+    "وكيل دعم تقني في تليكوم تونس يشرح الحل بالدارجة التونسية. "
+    # ── تغيير الخدمة ─────────────────────────────────────────────────────────────
+    "تغيير الخدمة: 'نعملك تحويل من ADSL لفيبر'، 'نرفعلك السرعة'، "
+    "'نبدّل باقتك'، 'نحدّث الاشتراك'، 'الخدمة الجديدة تبدأ من بكري'، "
+    "'يلزمك تمشي للوكالة تجيب بطاقتك'، 'نسجّل طلب التغيير'، "
+    # ── مشكلة في التجوال ─────────────────────────────────────────────────────────
+    "مشكلة في التجوال: 'نفعّل التجوال على خطك'، 'روامينق موش مفعّل'، "
+    "'يلزمك تتصل بـ 1298 قبل السفر'، 'نبعث إشعار التفعيل'، "
+    "'التجوال يخدم في أوروبا والمغرب'، 'السرعة في الخارج محدودة'، "
+    # ── اعتراض على الفاتورة ──────────────────────────────────────────────────────
+    "اعتراض على الفاتورة: 'نراجع الفاتورة معك'، 'المبلغ فيه غلطة'، "
+    "'نعملك تخفيض'، 'نرجعلك الفرق'، 'الفاتورة فيها استهلاك زيادة'، "
+    "'نفتح ملف اعتراض'، 'نصحح الفاتورة خلال 48 ساعة'، "
+    "'ما فيهاش مشكلة نصفّي معك الحساب'، 'الفاتورة صحيحة لأن...'، "
+    # ── انقطاع الانترنات ─────────────────────────────────────────────────────────
+    "انقطاع الانترنات: 'نبعث فريق تقني يجيك'، 'عيطلك التقني اليوم'، "
+    "'علاش ما تعيّد تشغيل الباكس'، 'الكابل الخارجي مقطوع'، "
+    "'المشكل في البنية التحتية'، 'نسجّل شكوى قطع الانترنت'، "
+    "'الخط يرجع يخدم باش نصلح العطب'، 'نتابع معك الموضوع'، "
+    # ── تأخير في التركيب ─────────────────────────────────────────────────────────
+    "تأخير في التركيب: 'موعد التقني يوم الخميس'، 'التقني يجيك من 9 لـ 12'، "
+    "'نحجزلك موعد جديد'، 'الطلب مسجّل عندنا'، 'التركيب يأخذ يومين'، "
+    "'نبعث تقني للتركيب'، 'نتابع ملف التركيب'، 'رقم طلبك هو'، "
+    # ── مشاكل أخرى / غير معروفة ──────────────────────────────────────────────────
+    "مشاكل أخرى: 'نسجّل مشكلتك'، 'نحيلك للقسم المختص'، "
+    "'نرجع نتصل بيك خلال 24 ساعة'، 'الحل هو'، 'يلزمك'، 'اش نعملوا'، "
+    # ── مفردات أرقام وأسماء أماكن ────────────────────────────────────────────────
+    "رقم الطلب، رقم المعاملة، رقم الخط، رقم الحساب. "
+    "صفاقس، سوسة، تونس، نابل، المنستير، بنزرت، قفصة، قابس، أريانة، منوبة، "
+    "مدنين، تطاوين، القيروان، سيدي بوزيد، زغوان، سليانة، الكاف، جندوبة، باجة، "
+    "توزر، قبلي، المهدية."
 )
 
 
@@ -2935,18 +3155,24 @@ def api_voice_agent():
             tmp_path = tmp.name
 
         model = _get_whisper()
-        segments, _ = model.transcribe(
+        segments, info = model.transcribe(
             tmp_path,
             language=Config.STT_LANGUAGE,
             beam_size=7,                        # précision maximale pour voix agent
+            best_of=5,                          # 5 candidats → choisir le meilleur
             vad_filter=False,                   # DÉSACTIVÉ — évite la coupure agressive des segments
             initial_prompt=_AGENT_STT_PROMPT,
-            temperature=0.0,                    # Déterministe → transcription complète
+            temperature=[0.0, 0.2, 0.4],       # Essai multi-température → réduit les hallucinations
             condition_on_previous_text=True,    # Continuité entre segments
-            no_speech_threshold=0.8,            # Haute tolérance → Whisper ignore peu de segments
+            no_speech_threshold=0.9,            # Très haute tolérance → moins de segments rejetés
+            compression_ratio_threshold=2.8,    # Filtre les transcriptions répétitives/hallucinées
+            word_timestamps=False,
         )
         transcript = " ".join(seg.text.strip() for seg in segments).strip()
-        logger.info(f"[voice_agent] Transcription agent : '{transcript[:80]}'")
+        logger.info(
+            f"[voice_agent] Transcription agent : '{transcript[:80]}' "
+            f"[lang={info.language} prob={info.language_probability:.2f}]"
+        )
         return jsonify({"transcript": transcript})
 
     except ImportError:

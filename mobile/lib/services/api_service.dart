@@ -303,12 +303,14 @@ class ApiService {
 
   /// Envoie un fichier audio au backend Whisper et retourne la transcription.
   /// [filePath] : chemin vers le fichier audio (WAV/OGG/M4A).
+  /// Utilise /api/mobile/stt (sans session requise) — même moteur Whisper
+  /// que l'interface web, optimisé pour la darija tunisienne.
   /// Retourne null si le backend est inaccessible.
   Future<String?> sttFromAudio(String filePath) async {
     try {
       final request = http.MultipartRequest(
         'POST',
-        Uri.parse('$baseUrl/api/user/stt'),
+        Uri.parse('$baseUrl/api/mobile/stt'),
       );
       if (_userId != null) request.headers['X-User-ID'] = _userId!;
       request.files.add(await http.MultipartFile.fromPath('audio', filePath));
@@ -329,12 +331,17 @@ class ApiService {
   // ════════════════════════════════════════════════════════
 
   /// Envoie le texte au backend edge-tts et retourne les bytes MP3.
+  /// Utilise /api/mobile/tts (sans session requise) — même voix que l'interface
+  /// web (ar-TN-ReemNeural via edge-tts Microsoft Neural TTS).
   /// Retourne null si le backend est inaccessible (fallback flutter_tts).
   Future<Uint8List?> getTtsAudio(String text) async {
     try {
       final resp = await http.post(
-        Uri.parse('$baseUrl/api/user/tts'),
-        headers: {'Content-Type': 'application/json'},
+        Uri.parse('$baseUrl/api/mobile/tts'),
+        headers: {
+          'Content-Type': 'application/json',
+          if (_userId != null) 'X-User-ID': _userId!,
+        },
         body: jsonEncode({'text': text}),
       ).timeout(const Duration(seconds: 15));
 
