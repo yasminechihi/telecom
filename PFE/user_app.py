@@ -283,6 +283,8 @@ _ASK_NUMBER_INTENTS_NORM: frozenset = frozenset(
         "انقطاع الانترنت",
         "تأخير في التركيب",
         "تاخير في التركيب",
+        "مشكلة في التجوال",
+        "مشكله في التجوال",
     }
 )
 
@@ -1286,20 +1288,6 @@ def process_user_message(conv_session_id: str, user_text: str) -> dict:
             return {"bot_response": bot_resp, "session_ended": False,
                     "transferred": False, "statut": "resolue",
                     "sujet": _stored_intent_init_m or intent or sess.get("pending_intent", ""),
-                    "service_type": service_type}
-        elif _learned_init_m and _force_num_init_m:
-            _ask_num_init_m = getattr(Config, "ASK_REQUEST_NUMBER_MSG",
-                                      "أعطيني رقم الطلب أو المعاملة باش نكمل معك.")
-            sess["stage"]            = "waiting_for_request_number"
-            sess["pending_intent"]   = _stored_intent_init_m or intent
-            sess["original_problem"] = user_text
-            sess["history"].append(("bot", _ask_num_init_m))
-            logger.info(
-                f"[{conv_session_id}] Réponse apprise (initial, tous intents) mais numéro requis"
-            )
-            return {"bot_response": _ask_num_init_m, "session_ended": False,
-                    "transferred": False, "statut": "en_cours",
-                    "sujet": intent or sess.get("pending_intent", ""),
                     "service_type": service_type}
 
         clari = response_eng.find_clarification_question(
