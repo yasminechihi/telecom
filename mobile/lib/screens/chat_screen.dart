@@ -379,6 +379,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
         setState(() {
           _agentResponse = agentResp;
           _showRating    = true;
+          _amiCalled     = false; // Agent a raccroché → plus "en appel", barre de transfert correcte
         });
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(SnackBar(

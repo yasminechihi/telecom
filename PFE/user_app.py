@@ -292,6 +292,26 @@ def _is_ask_number_intent(intent: str) -> bool:
     """True si cet intent doit TOUJOURS passer par la demande du numéro de demande."""
     return bool(intent and _norm_intent_key(intent.strip()) in _ASK_NUMBER_INTENTS_NORM)
 
+
+# Valeurs d'intent considérées comme "inconnues / invalides".
+# Python `or` ne distingue pas '' de 'غير محدد' (les deux sont truthy/falsy différemment),
+# ce qui fait que '"غير محدد" or "تأخير في التركيب"' retourne "غير محدد" — incorrect.
+_UNKNOWN_INTENT_SET: frozenset = frozenset({"", "غير محدد", "unknown", "غير_محدد"})
+
+
+def _resolve_intent(stored: str, fallback: str) -> str:
+    """
+    Retourne `stored` s'il est sémantiquement valide (non-vide, non-inconnu),
+    sinon retourne `fallback`.
+
+    Exemple :
+      'غير محدد' or 'تأخير في التركيب'  →  'غير محدد'   ← INCORRECT (Python or)
+      _resolve_intent('غير محدد', 'تأخير في التركيب')  →  'تأخير في التركيب'  ← CORRECT
+    """
+    s = (stored or "").strip()
+    return s if s not in _UNKNOWN_INTENT_SET else (fallback or "").strip()
+
+
 # Détecte toutes les formulations "donne-moi un numéro" dans les réponses du dataset :
 #   "اعطيني الرقم"  / "اعطيني رقم المطلب" / "اعطيني رقمك"
 #   "أعطيني رقم الخط" / "أعطيني رقم المطلب"  (avec hamza)
@@ -627,12 +647,13 @@ def _find_session_learned_pair(sess: dict, query_text: str,
 
     MIN_SCORE = 0.62
     if best_score >= MIN_SCORE and best_resp:
-        # ── Couche 6 : inférence intent manquant ─────────────────────────────
-        # Si l'entrée gagnante a un intent vide (ancienne entrée ou session lookup
-        # raté lors de l'apprentissage), essayer d'inférer l'intent via le NLU
-        # sur le TEXTE DU PROBLÈME STOCKÉ, puis mettre à jour l'entrée en mémoire.
-        # Cela garantit que force_num est correct même pour les anciennes entrées.
-        if not best_intent and best_entry is not None and best_problem:
+        # ── Couche 6 : inférence intent manquant ou sémantiquement invalide ────
+        # Si l'entrée gagnante a un intent vide OU "غير محدد" / "unknown"
+        # (ex. quand l'apprentissage a reçu l'intent NLU du numéro saisi = "غير محدد"),
+        # tenter d'inférer l'intent correct via NLU sur le TEXTE DU PROBLÈME STOCKÉ,
+        # puis mettre à jour l'entrée en mémoire pour tous les appels suivants.
+        if (not best_intent or best_intent in _UNKNOWN_INTENT_SET) \
+                and best_entry is not None and best_problem:
             try:
                 _inferred_nlu = nlu.analyze(best_problem)
                 _inferred_int = (_inferred_nlu.get("intent") or "").strip()
@@ -1272,9 +1293,8 @@ def process_user_message(conv_session_id: str, user_text: str) -> dict:
         _learned_init_m, _stored_intent_init_m = _find_session_learned_pair(
             sess, user_text, cur_intent=intent
         )
-        _force_num_init_m = _is_ask_number_intent(
-            _stored_intent_init_m or intent
-        )
+        _eff_intent_init = _resolve_intent(_stored_intent_init_m, intent)
+        _force_num_init_m = _is_ask_number_intent(_eff_intent_init)
         if _learned_init_m and not _force_num_init_m:
             bot_resp = _learned_init_m
             sess["stage"]            = "initial"
@@ -1287,7 +1307,25 @@ def process_user_message(conv_session_id: str, user_text: str) -> dict:
             )
             return {"bot_response": bot_resp, "session_ended": False,
                     "transferred": False, "statut": "resolue",
-                    "sujet": _stored_intent_init_m or intent or sess.get("pending_intent", ""),
+                    "sujet": _eff_intent_init or sess.get("pending_intent", ""),
+                    "service_type": service_type}
+
+        elif _learned_init_m and _force_num_init_m:
+            # Réponse apprise mais l'intent nécessite le numéro de demande.
+            # Sauter la clarification et demander directement le numéro (2e appel, intents connus).
+            _ask_num_init = getattr(Config, "ASK_REQUEST_NUMBER_MSG",
+                                    "أعطيني رقم الطلب أو المعاملة باش نكمل معك.")
+            sess["stage"]            = "waiting_for_request_number"
+            sess["pending_intent"]   = _eff_intent_init or intent
+            sess["original_problem"] = user_text
+            sess["history"].append(("bot", _ask_num_init))
+            logger.info(
+                f"[{conv_session_id}] Réponse apprise (initial, force_num) → "
+                f"demande numéro immédiate pour '{user_text[:50]}'"
+            )
+            return {"bot_response": _ask_num_init, "session_ended": False,
+                    "transferred": False, "statut": "en_cours",
+                    "sujet": _eff_intent_init or sess.get("pending_intent", ""),
                     "service_type": service_type}
 
         clari = response_eng.find_clarification_question(
@@ -1346,7 +1384,8 @@ def process_user_message(conv_session_id: str, user_text: str) -> dict:
             _learned_unknown, _stored_intent_unk = _find_session_learned_pair(
                 sess, user_text, cur_intent=intent
             )
-            _force_num_unk_mob = _is_ask_number_intent(_stored_intent_unk or intent)
+            _eff_intent_unk    = _resolve_intent(_stored_intent_unk, intent)
+            _force_num_unk_mob = _is_ask_number_intent(_eff_intent_unk)
             if _learned_unknown and not _force_num_unk_mob:
                 bot_resp = _learned_unknown
                 sess["stage"]          = "initial"
@@ -1358,14 +1397,14 @@ def process_user_message(conv_session_id: str, user_text: str) -> dict:
                 )
                 return {"bot_response": bot_resp, "session_ended": False,
                         "transferred": False, "statut": "resolue",
-                        "sujet": _stored_intent_unk or intent or sess.get("pending_intent", ""),
+                        "sujet": _eff_intent_unk or sess.get("pending_intent", ""),
                         "service_type": service_type}
             elif _learned_unknown and _force_num_unk_mob:
                 # Réponse apprise mais numéro requis → demander d'abord le numéro
                 _ask_num_unk_mob = getattr(Config, "ASK_REQUEST_NUMBER_MSG",
                                            "أعطيني رقم الطلب أو المعاملة باش نكمل معك.")
                 sess["stage"]            = "waiting_for_request_number"
-                sess["pending_intent"]   = _stored_intent_unk or intent
+                sess["pending_intent"]   = _eff_intent_unk or intent
                 sess["original_problem"] = user_text
                 sess["history"].append(("bot", _ask_num_unk_mob))
                 logger.info(
@@ -1536,7 +1575,8 @@ def process_user_message(conv_session_id: str, user_text: str) -> dict:
     _learned_step2, _stored_intent_step2 = _find_session_learned_pair(
         sess, _orig_prob_step2, cur_intent=_step2_intent
     )
-    _force_num_step2 = _is_ask_number_intent(_stored_intent_step2 or _step2_intent)
+    _eff_intent_step2 = _resolve_intent(_stored_intent_step2, _step2_intent)
+    _force_num_step2  = _is_ask_number_intent(_eff_intent_step2)
     if _learned_step2 and not _force_num_step2:
         # Réponse apprise disponible ET aucun numéro requis → répondre directement
         bot_resp = _localize_response(_learned_step2, sess.get("collected_entities"))
@@ -1558,7 +1598,7 @@ def process_user_message(conv_session_id: str, user_text: str) -> dict:
                                  "أعطيني رقم الطلب أو المعاملة باش نكمل معك.")
         sess["stage"] = "waiting_for_request_number"
         if not sess.get("pending_intent"):
-            sess["pending_intent"] = _stored_intent_step2 or _step2_intent
+            sess["pending_intent"] = _eff_intent_step2 or _step2_intent
         if not sess.get("original_problem"):
             sess["original_problem"] = user_text
         sess["history"].append(("bot", _ask_num_step2))
@@ -1620,7 +1660,8 @@ def process_user_message(conv_session_id: str, user_text: str) -> dict:
         _learned_p4, _stored_intent_p4 = _find_session_learned_pair(
             sess, _orig_prob_p4, cur_intent=_chk_esc_intent
         )
-        _force_num_esc = _is_ask_number_intent(_stored_intent_p4 or _chk_esc_intent)
+        _eff_intent_p4 = _resolve_intent(_stored_intent_p4, _chk_esc_intent)
+        _force_num_esc = _is_ask_number_intent(_eff_intent_p4)
         if _learned_p4 and not _force_num_esc:
             # Réponse apprise disponible ET aucun numéro requis → répondre directement
             bot_resp = _localize_response(_learned_p4, sess.get("collected_entities"))
@@ -1752,7 +1793,8 @@ def process_user_message(conv_session_id: str, user_text: str) -> dict:
         _learned_p5, _stored_intent_p5 = _find_session_learned_pair(
             sess, _orig_prob_p5, cur_intent=_chk_loop
         )
-        _force_num_p5  = _is_ask_number_intent(_stored_intent_p5 or _chk_loop)
+        _eff_intent_p5 = _resolve_intent(_stored_intent_p5, _chk_loop)
+        _force_num_p5  = _is_ask_number_intent(_eff_intent_p5)
         if _learned_p5 and not _force_num_p5:
             bot_resp = _localize_response(_learned_p5, sess.get("collected_entities"))
             sess["history"].append(("bot", bot_resp))
@@ -1769,7 +1811,7 @@ def process_user_message(conv_session_id: str, user_text: str) -> dict:
                                       "أعطيني رقم الطلب أو المعاملة باش نكمل معك.")
             sess["stage"] = "waiting_for_request_number"
             if not sess.get("pending_intent"):
-                sess["pending_intent"] = _stored_intent_p5 or active_intent
+                sess["pending_intent"] = _eff_intent_p5 or active_intent
             if not sess.get("original_problem"):
                 sess["original_problem"] = user_text
             sess["history"].append(("bot", _ask_num_p5_mob))
