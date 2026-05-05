@@ -6,6 +6,7 @@ import '../theme/app_theme.dart';
 import '../services/api_service.dart';
 import '../models/user_model.dart';
 import '../widgets/tt_logo.dart';
+import 'settings_screen.dart';
 
 // ════════════════════════════════════════════════════════════
 //  Dashboard — identique à user_dashboard.html
@@ -214,6 +215,14 @@ class _DashboardScreenState extends State<DashboardScreen> {
             ),
           ),
           const SizedBox(width: 6),
+          IconButton(
+            icon: const Icon(Icons.settings_rounded, color: TTColors.muted, size: 20),
+            tooltip: 'Paramètres réseau',
+            onPressed: () => Navigator.push(
+              context,
+              MaterialPageRoute(builder: (_) => const SettingsScreen()),
+            ),
+          ),
           IconButton(
             icon: const Icon(Icons.logout_rounded, color: TTColors.muted, size: 20),
             tooltip: 'Déconnexion',

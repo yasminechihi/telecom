@@ -3,6 +3,7 @@ import 'dart:typed_data';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import '../models/user_model.dart';
+import 'discovery_service.dart';
 
 // ════════════════════════════════════════════════════════════
 //  Service API — se connecte au backend Flask (user_app.py)
@@ -14,12 +15,37 @@ import '../models/user_model.dart';
 
 class ApiService {
   // ── URL de base ───────────────────────────────────────────
-  // IMPORTANT : Sur téléphone physique, remplace l'IP ci-dessous
-  // par l'adresse IPv4 de ton PC sur le même réseau WiFi.
-  // Windows : ipconfig → "Adresse IPv4"  (ex: 192.168.1.15)
-  // Mac/Linux : ip a / ifconfig
-  // Émulateur Android uniquement → utilise 10.0.2.2
-  static const String baseUrl = 'http://192.168.1.224:5001';
+  // L'IP du serveur est stockée dans SharedPreferences (clé 'server_ip').
+  // Par défaut : 192.168.1.224 (WiFi maison).
+  // Pour changer l'IP sans recompiler : utiliser ApiService().setServerIp(newIp)
+  // ou l'écran Paramètres de l'app.
+  //
+  // Astuce réseau :
+  //   WiFi maison         → Windows: ipconfig  → "Adresse IPv4"  ex: 192.168.1.224
+  //   Partage téléphone   → Windows: ipconfig  → nouvelle IP     ex: 192.168.43.x
+  //   Émulateur Android   → utiliser 10.0.2.2 (alias localhost émulateur)
+  static const String _defaultServerIp = '192.168.1.224';
+  static const String _keyServerIp     = 'server_ip';
+
+  String _serverIp = _defaultServerIp;
+
+  String get baseUrl => 'http://$_serverIp:5001';
+
+  /// Charge l'IP depuis SharedPreferences (à appeler au démarrage).
+  Future<void> loadServerIp() async {
+    final prefs = await SharedPreferences.getInstance();
+    _serverIp = prefs.getString(_keyServerIp) ?? _defaultServerIp;
+  }
+
+  /// Change l'IP du serveur et la persiste dans SharedPreferences.
+  Future<void> setServerIp(String ip) async {
+    _serverIp = ip.trim();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_keyServerIp, _serverIp);
+  }
+
+  /// Retourne l'IP actuellement configurée.
+  String get currentServerIp => _serverIp;
 
   // ── Clés SharedPreferences ────────────────────────────────
   static const String _keyUserId     = 'user_id';
@@ -53,14 +79,34 @@ class ApiService {
   //  AUTHENTIFICATION
   // ════════════════════════════════════════════════════════
 
-  /// Connexion — renvoie null si succès, message d'erreur sinon
+  /// Connexion — renvoie null si succès, message d'erreur sinon.
+  /// Si le serveur configuré est inaccessible, tente une découverte
+  /// automatique UDP sur le réseau local avant d'abandonner.
   Future<String?> login(String email, String password) async {
+    // 1ère tentative avec l'IP actuelle
+    final result = await _tryLogin(email, password);
+    if (result != _kServerUnavailable) return result;
+
+    // Serveur non joignable → découverte automatique UDP
+    final discoveredIp = await DiscoveryService.findServer();
+    if (discoveredIp != null && discoveredIp != _serverIp) {
+      await setServerIp(discoveredIp); // mémorise la nouvelle IP
+      return await _tryLogin(email, password);
+    }
+
+    return _kServerUnavailable;
+  }
+
+  static const String _kServerUnavailable =
+      'Serveur non disponible. Lancez user_app.py (port 5001).';
+
+  Future<String?> _tryLogin(String email, String password) async {
     try {
       final resp = await http.post(
         Uri.parse('$baseUrl/api/mobile/login'),
         headers: _headers,
         body: jsonEncode({'email': email, 'password': password}),
-      ).timeout(const Duration(seconds: 10));
+      ).timeout(const Duration(seconds: 6));
 
       final data = jsonDecode(resp.body) as Map<String, dynamic>;
 
@@ -73,7 +119,7 @@ class ApiService {
         return data['error'] ?? 'Email ou mot de passe incorrect.';
       }
     } catch (_) {
-      return 'Serveur non disponible. Lancez user_app.py (port 5001).';
+      return _kServerUnavailable;
     }
   }
 

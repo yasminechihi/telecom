@@ -13,7 +13,10 @@ import 'widgets/tt_logo.dart';
 //  Identique à user_app.py (Flask) — même Firebase Firestore
 // ════════════════════════════════════════════════════════════
 
-void main() {
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  // Charge l'IP du serveur depuis SharedPreferences au démarrage
+  await ApiService().loadServerIp();
   runApp(const TTApp());
 }
 

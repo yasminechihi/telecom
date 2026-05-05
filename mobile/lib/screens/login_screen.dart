@@ -3,6 +3,7 @@ import 'package:go_router/go_router.dart';
 import '../theme/app_theme.dart';
 import '../services/api_service.dart';
 import '../widgets/tt_logo.dart';
+import 'settings_screen.dart';
 
 // ════════════════════════════════════════════════════════════
 //  Écran de Connexion — identique à user_login.html
@@ -24,6 +25,8 @@ class _LoginScreenState extends State<LoginScreen> {
   bool _loading      = false;
   bool _showPassword = false;
   String? _error;
+  // Message affiché pendant la recherche automatique du serveur
+  String _loadingMsg = 'Connexion en cours…';
 
   @override
   void dispose() {
@@ -34,15 +37,22 @@ class _LoginScreenState extends State<LoginScreen> {
 
   Future<void> _submit() async {
     if (!_formKey.currentState!.validate()) return;
-    setState(() { _loading = true; _error = null; });
+    setState(() { _loading = true; _error = null; _loadingMsg = 'Connexion en cours…'; });
 
-    final err = await ApiService().login(
-      _emailCtrl.text.trim(),
-      _passCtrl.text,
-    );
+    // Tentative normale (IP mémorisée)
+    final api = ApiService();
+    var err = await api.login(_emailCtrl.text.trim(), _passCtrl.text);
+
+    // Si le serveur n'a pas répondu, on informe que la recherche auto est en cours
+    if (err != null && err.contains('non disponible') && mounted) {
+      setState(() => _loadingMsg = 'Recherche du serveur sur le réseau…');
+      // La découverte UDP est déjà lancée dans login() — on relance
+      // avec le nouvel IP si trouvé
+      err = await api.login(_emailCtrl.text.trim(), _passCtrl.text);
+    }
 
     if (!mounted) return;
-    setState(() => _loading = false);
+    setState(() { _loading = false; _loadingMsg = 'Connexion en cours…'; });
 
     if (err == null) {
       context.go('/dashboard');
@@ -97,6 +107,15 @@ class _LoginScreenState extends State<LoginScreen> {
             ],
           ),
           const Spacer(),
+          // Bouton paramètres réseau (changer l'IP du serveur)
+          IconButton(
+            icon: const Icon(Icons.settings_ethernet_rounded, color: TTColors.muted, size: 22),
+            tooltip: 'Paramètres réseau (IP serveur)',
+            onPressed: () => Navigator.push(
+              context,
+              MaterialPageRoute(builder: (_) => const SettingsScreen()),
+            ),
+          ),
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
             decoration: BoxDecoration(
@@ -281,7 +300,14 @@ class _LoginScreenState extends State<LoginScreen> {
                   elevation: 4,
                 ),
                 child: _loading
-                    ? const SizedBox(width: 22, height: 22, child: CircularProgressIndicator(strokeWidth: 2.5, valueColor: AlwaysStoppedAnimation<Color>(Colors.white)))
+                    ? Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2.5, valueColor: AlwaysStoppedAnimation<Color>(Colors.white))),
+                          const SizedBox(width: 10),
+                          Text(_loadingMsg, style: const TextStyle(fontSize: 13, fontFamily: 'Cairo', color: Colors.white)),
+                        ],
+                      )
                     : const Row(
                         mainAxisAlignment: MainAxisAlignment.center,
                         children: [

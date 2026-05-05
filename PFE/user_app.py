@@ -3647,6 +3647,45 @@ def unhandled_exception(e):
 
 
 # ══════════════════════════════════════════════════════════
+#  DÉCOUVERTE AUTOMATIQUE UDP (Auto-Discovery)
+#  Permet à l'app mobile de trouver le serveur automatiquement
+#  sur n'importe quel réseau WiFi (maison, hotspot, etc.)
+#
+#  Protocole :
+#    Téléphone  → broadcast UDP port 5002 : "DISCOVER_TT_SERVER"
+#    Serveur    → réponse UDP              : "TT_SERVER_FOUND:5001"
+#  L'app mobile récupère l'IP source de la réponse → connexion auto.
+# ══════════════════════════════════════════════════════════
+
+import socket as _socket_mod
+
+def _start_udp_discovery():
+    """Démarre le service de découverte UDP en arrière-plan."""
+    import socket as _sock
+    import threading as _thr
+
+    def _discovery_loop():
+        try:
+            udp = _sock.socket(_sock.AF_INET, _sock.SOCK_DGRAM)
+            udp.setsockopt(_sock.SOL_SOCKET, _sock.SO_REUSEADDR, 1)
+            udp.bind(('', 5002))
+            logger.info("[Discovery] Service UDP démarré sur port 5002 — l'app mobile peut se connecter automatiquement")
+            while True:
+                try:
+                    data, addr = udp.recvfrom(256)
+                    if data.strip() == b'DISCOVER_TT_SERVER':
+                        udp.sendto(b'TT_SERVER_FOUND:5001', addr)
+                        logger.debug(f"[Discovery] Réponse envoyée à {addr[0]}")
+                except Exception:
+                    pass
+        except Exception as e:
+            logger.warning(f"[Discovery] Impossible de démarrer le service UDP: {e}")
+
+    t = threading.Thread(target=_discovery_loop, daemon=True, name="udp-discovery")
+    t.start()
+
+
+# ══════════════════════════════════════════════════════════
 #  LANCEMENT
 # ══════════════════════════════════════════════════════════
 
@@ -3654,4 +3693,5 @@ if __name__ == "__main__":
     logger.info("=" * 55)
     logger.info("  Espace Client TT — http://localhost:5001")
     logger.info("=" * 55)
+    _start_udp_discovery()
     app.run(host="0.0.0.0", port=5001, debug=False)
