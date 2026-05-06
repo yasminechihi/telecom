@@ -4,7 +4,7 @@
 #  Flask app séparée (port 5001) — Ne touche PAS à app.py
 #
 #  Fonctionnalités :
-#    - Authentification : Sign In / Sign Up (Firebase Firestore)
+#    - Authentification : Sign In / Sign Up (Supabase)
 #    - Chat avec le bot (même logique que app.py, sans détails NLU)
 #    - Dashboard : historique des réclamations par client
 #    - Design Tunisie Telecom (violet, blanc)
@@ -80,10 +80,10 @@ logging.basicConfig(level=logging.INFO,
 logger = logging.getLogger("user_app")
 
 # ══════════════════════════════════════════════════════════
-#  INITIALISATION FIREBASE FIRESTORE
+#  INITIALISATION SUPABASE
 # ══════════════════════════════════════════════════════════
-from firebase_config import (
-    init_firebase,
+from supabase_config import (
+    init_supabase,
     user_create, user_get_by_email, user_get_by_id,
     user_update_last_login, user_update_profile,
     conversation_create, conversation_get, conversation_update,
@@ -92,12 +92,12 @@ from firebase_config import (
     user_stats, reclamations_get_by_user,
 )
 
-logger.info("Connexion Firebase Firestore...")
-_db_ok = init_firebase()
+logger.info("Connexion Supabase...")
+_db_ok = init_supabase()
 if not _db_ok:
     logger.critical("=" * 60)
-    logger.critical("  ERREUR Firebase : vérifiez serviceAccountKey.json")
-    logger.critical("  Voir firebase_config.py pour les instructions setup")
+    logger.critical("  ERREUR Supabase : vérifiez config.py (SUPABASE_URL / SUPABASE_KEY)")
+    logger.critical("  Voir supabase_config.py pour les instructions setup")
     logger.critical("=" * 60)
 
 # ── Intégration Asterisk AMI (appels via WSL) ─────────────
@@ -772,7 +772,7 @@ def login_required(f):
 
 
 def get_current_user():
-    """Retourne les infos de l'utilisateur connecté depuis Firebase."""
+    """Retourne les infos de l'utilisateur connecté depuis Supabase."""
     if "user_id" not in session:
         return None
     uid = session["user_id"]
@@ -1928,7 +1928,7 @@ def login():
         try:
             user = user_get_by_email(email)
         except Exception as e:
-            logger.error(f"[login] Erreur Firebase : {e}")
+            logger.error(f"[login] Erreur Supabase : {e}")
             error = "Service temporairement indisponible. Réessayez dans quelques instants."
             return render_template("user_login.html", error=error, mode="login")
 
@@ -1970,7 +1970,7 @@ def register():
             error = "Le mot de passe doit contenir au moins 6 caractères."
         else:
             try:
-                # Vérifier email unique dans Firebase
+                # Vérifier email unique dans Supabase
                 existing = user_get_by_email(email)
                 if existing:
                     error = "Cet email est déjà utilisé."
@@ -1984,7 +1984,7 @@ def register():
                     session["user_prenom"] = prenom
                     return redirect(url_for("dashboard"))
             except Exception as e:
-                logger.error(f"[register] Erreur Firebase : {e}")
+                logger.error(f"[register] Erreur Supabase : {e}", exc_info=True)
                 error = "Service temporairement indisponible. Réessayez dans quelques instants."
 
     return render_template("user_login.html", error=error, mode="register")
@@ -2020,7 +2020,7 @@ def api_mobile_login():
     try:
         user = user_get_by_email(email)
     except Exception as e:
-        logger.error(f"[api_mobile_login] Firebase error: {e}")
+        logger.error(f"[api_mobile_login] Supabase error: {e}")
         return jsonify({"success": False, "error": "Service temporairement indisponible."}), 503
 
     if not user or not check_password_hash(user.get("password_hash", ""), password):
@@ -2071,7 +2071,7 @@ def api_mobile_register():
         color    = colors[hash(email) % len(colors)]
         user_id  = user_create(nom, prenom, email, pwd_hash, telephone, color)
     except Exception as e:
-        logger.error(f"[api_mobile_register] Firebase error: {e}")
+        logger.error(f"[api_mobile_register] Supabase error: {e}")
         return jsonify({"success": False, "error": "Service temporairement indisponible."}), 503
 
     session["user_id"]     = user_id
@@ -2224,7 +2224,7 @@ def api_mobile_chat():
     if not text:
         return jsonify({"error": "text requis"}), 400
 
-    # Créer la conversation Firebase si elle n'existe pas encore
+    # Créer la conversation Supabase si elle n'existe pas encore
     if not conv_id and uid:
         try:
             conv_id = conversation_create(uid, sujet="Chat mobile", canal="mobile")
@@ -2292,7 +2292,7 @@ def api_mobile_chat():
         if _mob_ce.get("wilaya"):     _mob_nlu_data["wilaya"]     = _mob_ce["wilaya"]
         if _mob_ce.get("delegation"): _mob_nlu_data["delegation"] = _mob_ce["delegation"]
 
-    # Sauvegarder les messages dans Firebase (avec NLU data, identique au web)
+    # Sauvegarder les messages dans Supabase (avec NLU data, identique au web)
     if uid and conv_id:
         try:
             message_add(conv_id, uid, "user", text, nlu_data=_mob_nlu_data)
@@ -2311,7 +2311,7 @@ def api_mobile_chat():
                 _upd["was_transferred"] = True
             conversation_update(conv_id, **_upd)
         except Exception as e:
-            logger.error(f"[api_mobile_chat] Firebase save error: {e}")
+            logger.error(f"[api_mobile_chat] Supabase save error: {e}")
 
     # ── Transfert vers agent humain → appel Asterisk (identique à /api/user/chat) ──
     ami_called         = False
@@ -2321,7 +2321,7 @@ def api_mobile_chat():
     if result.get("transferred"):
         # get_current_user() lit session["user_id"] — déjà injecté ci-dessus
         user_info = get_current_user() or {}
-        # Fallback : lire directement dans Firebase si session insuffisante
+        # Fallback : lire directement dans Supabase si session insuffisante
         if not user_info and uid:
             try:
                 user_info = user_get_by_id(uid) or {}
@@ -2339,7 +2339,7 @@ def api_mobile_chat():
         _transfer_sess = user_conv_state.get(conv_id, {})
         problem_text   = _build_tts_text(_transfer_sess)
 
-        # Stocker le problème dans Firebase (visible back-office)
+        # Stocker le problème dans Supabase (visible back-office)
         raw_problem = _transfer_sess.get("last_transferred_problem", "") or problem_text
         if raw_problem and conv_id:
             try:
@@ -2434,7 +2434,7 @@ def api_mobile_call_status(conv_id):
       - agent_hung_up : True dès que l'agent a raccroché
       - agent_response: Transcription de la réponse de l'agent (si dispo)
       - seconds_since : Secondes écoulées depuis le transfert
-      - statut        : Statut courant de la conversation Firebase
+      - statut        : Statut courant de la conversation Supabase
     """
     import time as _t
     uid = _mobile_user_id()
@@ -2583,7 +2583,7 @@ def dashboard():
     try:
         user = get_current_user()
     except Exception as e:
-        logger.error(f"[dashboard] Erreur Firebase get_current_user : {e}")
+        logger.error(f"[dashboard] Erreur Supabase get_current_user : {e}")
         # On utilise les données de session comme fallback (pas de déconnexion forcée)
         user = {
             "id":     session.get("user_id", ""),
@@ -2623,14 +2623,14 @@ def dashboard():
 def api_chat():
     data       = request.get_json()
     user_text  = (data.get("message") or "").strip()
-    conv_id_db = data.get("conversation_id")   # ID Firebase de la conversation
+    conv_id_db = data.get("conversation_id")   # ID Supabase de la conversation
 
     if not user_text:
         return jsonify({"error": "Message vide"}), 400
 
     user_id = session["user_id"]
 
-    # ── Récupérer ou créer la conversation dans Firebase ──
+    # ── Récupérer ou créer la conversation dans Supabase ──
     conv = None
     if conv_id_db:
         conv = conversation_get(conv_id_db)
@@ -2639,12 +2639,12 @@ def api_chat():
             conv = None
 
     if not conv:
-        # Nouvelle conversation — l'ID Firebase sert de session_id bot
+        # Nouvelle conversation — l'ID Supabase sert de session_id bot
         conv_id_db = conversation_create(user_id)
         conv = {"id": conv_id_db, "user_id": user_id,
                 "statut": "en_cours", "sujet": "", "service_type": ""}
 
-    # L'ID Firebase de la conversation est utilisé comme clé d'état bot
+    # L'ID Supabase de la conversation est utilisé comme clé d'état bot
     session_id = conv_id_db
 
     # Stamper le user_id dans la session dès le premier message (pour api_internal_agent_reply)
@@ -2688,7 +2688,7 @@ def api_chat():
     # ── Sauvegarder la réponse bot ────────────────────────
     message_add(conv_id_db, user_id, "bot", bot_resp)
 
-    # ── Mettre à jour la conversation Firebase ───────────
+    # ── Mettre à jour la conversation Supabase ───────────
     new_statut  = result.get("statut", "en_cours")
     new_sujet   = result.get("sujet")   or conv.get("sujet",        "")
     new_service = result.get("service_type") or conv.get("service_type", "")
@@ -2729,7 +2729,7 @@ def api_chat():
         _transfer_sess = user_conv_state.get(session_id, {})
         problem_text   = _build_tts_text(_transfer_sess)
 
-        # Stocker le problème dans Firebase pour que le back-office puisse l'afficher
+        # Stocker le problème dans Supabase pour que le back-office puisse l'afficher
         raw_problem = _transfer_sess.get("last_transferred_problem", "") or problem_text
         if raw_problem:
             try:
@@ -2921,9 +2921,9 @@ def api_internal_agent_reply():
     Vérifie le header X-Internal-Secret avant traitement.
 
     Body JSON :
-        ticket_id  : identifiant Firebase de la conversation
+        ticket_id  : identifiant Supabase de la conversation
         response   : texte de la réponse de l'agent
-        session_id : identifiant de la session (= conv_id Firebase)
+        session_id : identifiant de la session (= conv_id Supabase)
     """
     # Vérification secret interne
     if request.headers.get("X-Internal-Secret") != _INTERNAL_SECRET:
@@ -3018,7 +3018,7 @@ def api_internal_agent_reply():
         _session_learn_store({}, ticket_id or "unknown", response, intent=_learn_intent)
         learned = True
 
-    # Écrire la réponse de l'agent comme message bot dans le chat Firebase
+    # Écrire la réponse de l'agent comme message bot dans le chat Supabase
     # → le client voit la solution dans l'interface ; le bot a aussi appris
     _uid = sess.get("user_id", "") if sess else ""
     if sid and _uid:
@@ -3038,7 +3038,7 @@ def api_internal_agent_reply():
         sess["original_problem"]         = ""   # Fix TTS : effacer au reset transfert
         sess["last_transferred_problem"] = ""
 
-    # Mettre à jour le statut Firebase
+    # Mettre à jour le statut Supabase
     try:
         conversation_update(ticket_id, statut="resolue")
     except Exception as _e:
@@ -3067,7 +3067,7 @@ def api_history():
         reclamations = reclamations_get_by_user(user_id, limit=50)
         return jsonify({"reclamations": reclamations})
     except Exception as e:
-        logger.error(f"[api_history] Erreur Firebase : {e}", exc_info=True)
+        logger.error(f"[api_history] Erreur Supabase : {e}", exc_info=True)
         return jsonify({"reclamations": [], "error": str(e)}), 500
 
 
@@ -3108,7 +3108,7 @@ def api_conversation_detail(conv_id):
 
         return jsonify({"conversation": c, "messages": messages})
     except Exception as e:
-        logger.error(f"[api_conversation_detail] Erreur Firebase : {e}", exc_info=True)
+        logger.error(f"[api_conversation_detail] Erreur Supabase : {e}", exc_info=True)
         return jsonify({"error": str(e)}), 500
 
 
@@ -3161,7 +3161,7 @@ def api_stats():
             stats["satisfaction_count"] = 0
         return jsonify(stats)
     except Exception as e:
-        logger.error(f"[api_stats] Erreur Firebase : {e}", exc_info=True)
+        logger.error(f"[api_stats] Erreur Supabase : {e}", exc_info=True)
         return jsonify({"total": 0, "resolues": 0, "transferees": 0, "en_cours": 0,
                         "satisfaction_avg": 0.0, "satisfaction_count": 0,
                         "error": str(e)}), 500
@@ -3196,7 +3196,7 @@ def api_top_issues():
 
         return jsonify({"issues": issues, "total": len(reclamations)})
     except Exception as e:
-        logger.error(f"[api_top_issues] Erreur Firebase : {e}", exc_info=True)
+        logger.error(f"[api_top_issues] Erreur Supabase : {e}", exc_info=True)
         return jsonify({"issues": [], "total": 0, "error": str(e)}), 500
 
 
@@ -3213,7 +3213,7 @@ def api_call_status(conv_id):
     Stratégie de détection "agent a raccroché" (robuste) :
       1. Signal primaire : _call_states[conv_id].agent_hung_up=True
          (positionné par api_internal_agent_reply quand Whisper transcrit la réponse)
-      2. Fallback : la conv a été marquée comme transférée puis son statut Firebase
+      2. Fallback : la conv a été marquée comme transférée puis son statut Supabase
          a basculé de 'transferee' → 'resolue' (agent a raccroché même sans audio).
     """
     import time as _t
@@ -3367,7 +3367,7 @@ def api_ami_debug():
             "✅ Tout est OK — l'appel devrait fonctionner"
             if (tcp_ok and ami_login_ok and phone)
             else (
-                "❌ Numéro de téléphone MANQUANT dans le profil Firebase"
+                "❌ Numéro de téléphone MANQUANT dans le profil Supabase"
                 if not phone
                 else (
                     "❌ Port AMI 5038 inaccessible — Asterisk ne tourne pas dans WSL"
@@ -3660,6 +3660,48 @@ def api_check_capabilities():
     except ImportError:
         pass
     return jsonify({"stt": stt_ok, "tts": tts_ok})
+
+
+# ══════════════════════════════════════════════════════════
+#  DIAGNOSTIC SUPABASE
+# ══════════════════════════════════════════════════════════
+
+@app.route("/api/debug/supabase")
+def debug_supabase():
+    """Route de diagnostic — voir quelles tables/colonnes sont OK."""
+    from supabase_config import get_supabase
+    results = {}
+    try:
+        sb = get_supabase()
+        results["connexion"] = "OK"
+    except Exception as e:
+        return jsonify({"connexion": f"ERREUR: {e}"}), 500
+
+    tables = {
+        "users":         ["id", "nom", "prenom", "email", "password_hash",
+                          "telephone", "avatar_color", "is_active", "last_login", "created_at"],
+        "conversations": ["id", "user_id", "titre", "statut", "sujet",
+                          "service_type", "canal", "last_msg", "last_role",
+                          "nb_messages", "apercu", "last_problem",
+                          "satisfaction_rating", "satisfaction_feedback",
+                          "was_transferred", "transferred", "created_at", "updated_at"],
+        "messages":      ["id", "conversation_id", "user_id", "role", "content",
+                          "nlu_intent", "nlu_confidence", "nlu_sentiment", "nlu_service",
+                          "nlu_wilaya", "nlu_delegation", "nlu_action", "nlu_decision",
+                          "nlu_conf_rag", "nlu_ml_used", "nlu_escalate", "created_at"],
+        "dataset_nlp":   ["id", "client_name", "location_wilaya", "location_delegation",
+                          "issue_type", "service_type", "suggested_action",
+                          "sentiment_label", "instruction", "response", "added_at"],
+    }
+
+    for table, cols in tables.items():
+        try:
+            row = sb.table(table).select(", ".join(cols)).limit(1).execute()
+            results[table] = "OK"
+        except Exception as e:
+            results[table] = f"ERREUR: {e}"
+
+    return jsonify(results)
 
 
 # ══════════════════════════════════════════════════════════

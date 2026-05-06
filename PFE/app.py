@@ -2103,7 +2103,7 @@ def human_response():
     # Sans ça, le forward vers user_app.py utilise le sid web → session introuvable
     # côté mobile → problème_text = ticket_id → apprentissage inutilisable.
     ticket_data        = transfer.get_ticket(ticket_id) if ticket_id else {}
-    ticket_session_id  = ticket_data.get("session_id", "")     # peut être un conv_id Firebase
+    ticket_session_id  = ticket_data.get("session_id", "")     # peut être un conv_id Supabase
     # Priorité : original_problem (plainte initiale) → last_user_msg (fallback)
     ticket_problem_txt = (ticket_data.get("original_problem") or
                           ticket_data.get("last_user_msg", ""))
@@ -2157,11 +2157,11 @@ def human_response():
         sess["last_transferred_problem"] = ""
 
     # ── Transmettre la réponse à user_app.py (port 5001) ─────────────────────
-    # CRITIQUE : on passe le session_id du TICKET (mobile = conv_id Firebase)
+    # CRITIQUE : on passe le session_id du TICKET (mobile = conv_id Supabase)
     # et le problem_text réel pour que user_app.py trouve la bonne session et
     # mémorise une correspondance utilisable.
     import urllib.request, urllib.error as _ue
-    _mobile_sid = ticket_session_id or sid   # préférer l'ID Firebase si dispo
+    _mobile_sid = ticket_session_id or sid   # préférer l'ID Supabase si dispo
     _user_app_payload = json.dumps({
         "ticket_id":    ticket_id,
         "response":     response,
@@ -2356,7 +2356,7 @@ def live_conversations():
     Permet de monitorer en temps reel les echanges user_app ↔ bot dans app.py.
     """
     try:
-        from firebase_config import conversations_get_all_recent
+        from supabase_config import conversations_get_all_recent
         limit = min(int(request.args.get("limit", 30)), 100)
         convs = conversations_get_all_recent(limit=limit)
         return jsonify({"conversations": convs, "total": len(convs)})
@@ -2373,7 +2373,7 @@ def conv_messages(conv_id: str):
     et les données NLU par message utilisateur.
     """
     try:
-        from firebase_config import messages_get_by_conversation, conversation_get
+        from supabase_config import messages_get_by_conversation, conversation_get
         msgs = messages_get_by_conversation(conv_id)
         # Serialiser les timestamps
         for m in msgs:
@@ -2410,7 +2410,7 @@ def conv_nlu_analysis(conv_id: str):
       wilaya, delegation, action, decision, escalate.
     """
     try:
-        from firebase_config import messages_get_by_conversation
+        from supabase_config import messages_get_by_conversation
 
         msgs = messages_get_by_conversation(conv_id)
         user_msgs = [m for m in msgs if m.get("role") == "user"]
@@ -2468,7 +2468,7 @@ def conv_nlu_analysis(conv_id: str):
         # Transféré → décision = escalade (comme Test Bot)
         conv_transferred = False
         try:
-            from firebase_config import conversation_get
+            from supabase_config import conversation_get
             conv_doc = conversation_get(conv_id)
             if conv_doc and conv_doc.get("statut") == "transferee":
                 conv_transferred = True
@@ -2503,7 +2503,7 @@ def admin_stats_route():
       - délai moyen de réponse, temps min. de résolution
     """
     try:
-        from firebase_config import admin_stats
+        from supabase_config import admin_stats
         return jsonify(admin_stats())
     except Exception as e:
         logger.error(f"[admin_stats] Erreur : {e}", exc_info=True)

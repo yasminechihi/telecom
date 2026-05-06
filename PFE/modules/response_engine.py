@@ -215,7 +215,7 @@ class ResponseEngine:
     # Chargement et PARSING du dataset
     # ─────────────────────────────────────────────────────────
     def _parse_record(self, rec: dict) -> dict | None:
-        """Parse un enregistrement brut (JSONL ou Firebase) en record structuré."""
+        """Parse un enregistrement brut (JSONL ou Supabase) en record structuré."""
         if not rec.get("instruction") or not rec.get("response"):
             return None
         turns = self._parse_turns(rec["instruction"])
@@ -230,31 +230,31 @@ class ResponseEngine:
         Charge le dataset et parse chaque conversation en tours structurés.
 
         Ordre de priorité :
-          1. Firebase Firestore (collection dataset_nlp) — si USE_FIREBASE_DATASET=True
+          1. Supabase (collection dataset_nlp) — si USE_SUPABASE_DATASET=True
              et que la connexion est disponible.
-          2. Fichier JSONL local (DATASET_PATH) — fallback automatique si Firebase
+          2. Fichier JSONL local (DATASET_PATH) — fallback automatique si Supabase
              est indisponible ou désactivé.
           Dans tous les cas, learned_interactions.jsonl est ajouté en complément.
         """
         records = []
 
-        # ── Essai 1 : Firebase Firestore ──────────────────────────────────────
-        _use_fb = getattr(self.config, "USE_FIREBASE_DATASET", True)
+        # ── Essai 1 : Supabase ──────────────────────────────────────
+        _use_fb = getattr(self.config, "USE_SUPABASE_DATASET", True)
         if _use_fb:
             try:
                 import sys
                 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-                from firebase_config import dataset_load_all
+                from supabase_config import dataset_load_all
                 raw_records = dataset_load_all()
                 if raw_records:
                     for rec in raw_records:
                         parsed = self._parse_record(rec)
                         if parsed:
                             records.append(parsed)
-                    logger.info(f"Dataset chargé depuis Firebase : {len(records)} conversations.")
+                    logger.info(f"Dataset chargé depuis Supabase : {len(records)} conversations.")
             except Exception as _fb_err:
                 logger.warning(
-                    f"Firebase dataset indisponible ({_fb_err}) "
+                    f"Supabase dataset indisponible ({_fb_err}) "
                     "→ fallback fichier JSONL local."
                 )
                 records = []   # reset pour que le fallback JSONL prenne le relais

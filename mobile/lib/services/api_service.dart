@@ -24,7 +24,7 @@ class ApiService {
   //   WiFi maison         → Windows: ipconfig  → "Adresse IPv4"  ex: 192.168.1.224
   //   Partage téléphone   → Windows: ipconfig  → nouvelle IP     ex: 192.168.43.x
   //   Émulateur Android   → utiliser 10.0.2.2 (alias localhost émulateur)
-  static const String _defaultServerIp = '192.168.1.224';
+  static const String _defaultServerIp = '192.168.100.6';
   static const String _keyServerIp     = 'server_ip';
 
   String _serverIp = _defaultServerIp;
@@ -131,6 +131,31 @@ class ApiService {
     required String prenom,
     required String telephone,
   }) async {
+    // 1ère tentative avec l'IP actuelle
+    final result = await _tryRegister(
+        email: email, password: password,
+        nom: nom, prenom: prenom, telephone: telephone);
+    if (result != _kServerUnavailable) return result;
+
+    // Serveur non joignable → découverte automatique UDP
+    final discoveredIp = await DiscoveryService.findServer();
+    if (discoveredIp != null && discoveredIp != _serverIp) {
+      await setServerIp(discoveredIp);
+      return await _tryRegister(
+          email: email, password: password,
+          nom: nom, prenom: prenom, telephone: telephone);
+    }
+
+    return _kServerUnavailable;
+  }
+
+  Future<String?> _tryRegister({
+    required String email,
+    required String password,
+    required String nom,
+    required String prenom,
+    required String telephone,
+  }) async {
     try {
       final resp = await http.post(
         Uri.parse('$baseUrl/api/mobile/register'),
@@ -152,7 +177,7 @@ class ApiService {
         return data['error'] ?? "Erreur lors de l'inscription";
       }
     } catch (_) {
-      return 'Serveur non disponible. Lancez user_app.py (port 5001).';
+      return _kServerUnavailable;
     }
   }
 

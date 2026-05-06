@@ -44,8 +44,8 @@ pandas>=2.0.0
 # ── Backend Web ──────────────────────────────────────────────
 flask>=3.0.0
 
-# ── Firebase ──────────────────────────────────────────────────
-firebase-admin>=6.2.0   # Firestore (conversations + dataset NLP)
+# ── Supabase (PostgreSQL — remplace Firebase) ─────────────────
+supabase>=2.3.0         # Client Supabase (conversations + dataset NLP)
 
 # ── Logging & utilitaires ─────────────────────────────────────
 python-dotenv>=1.0.0
