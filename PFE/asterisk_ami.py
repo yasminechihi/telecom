@@ -521,7 +521,7 @@ def _watch_and_transcribe(ticket_id: str, session_id: str,
     # jamais c\u00f4t\u00e9 utilisateur tant que ce timeout n'est pas atteint.
     saw_active_channel   = False
     channel_gone_since   = None   # timestamp quand le canal a disparu
-    CHANNEL_GRACE_SECS   = 8      # laisse un peu de temps au fichier d'arriver
+    CHANNEL_GRACE_SECS   = 30      # laisse un peu de temps au fichier d'arriver
 
     deadline = time.time() + timeout_secs
     while time.time() < deadline:
@@ -580,8 +580,16 @@ def _watch_and_transcribe(ticket_id: str, session_id: str,
                 return
             continue
 
-        # Attendre 1 seconde pour que Asterisk finisse d'écrire le fichier
-        time.sleep(1)
+        # Attendre 3 secondes pour que Asterisk finisse d'écrire le fichier
+        # (1s était trop court — le Record() d'Asterisk peut encore flush le buffer)
+        time.sleep(3)
+
+        # ── Debug : lister le répertoire monitor pour diagnostiquer ──────
+        _ok_ls, _ls_out, _ = _wsl_sh(
+            f"ls -la '{_WSL_MONITOR_DIR}/' 2>/dev/null | grep -i 'agent_reply' || echo '(aucun fichier agent_reply)'",
+            timeout=5
+        )
+        logger.info(f"[STT] Monitor dir [{ticket_id}] : {_ls_out[:200]}")
 
         logger.info(f"[STT] Enregistrement détecté : {wsl_rec_path}")
 
@@ -619,7 +627,14 @@ def _watch_and_transcribe(ticket_id: str, session_id: str,
             logger.warning(f"[STT] Preprocessing échoué ({err_rs[:60]}) → utilise l'original 8kHz")
 
         # ── Copier le fichier (16kHz ou 8kHz fallback) vers Windows ──
-        ok2, _, err2 = _wsl_sh(f"cp '{src_for_copy}' '{wsl_tmp}'", timeout=10)
+        # Retry × 4 si la copie échoue (race condition Asterisk encore en écriture)
+        ok2, err2 = False, ""
+        for _cp_retry in range(4):
+            ok2, _, err2 = _wsl_sh(f"cp '{src_for_copy}' '{wsl_tmp}'", timeout=10)
+            if ok2:
+                break
+            logger.warning(f"[STT] Copie échouée (tentative {_cp_retry+1}/4) : {err2} — nouvelle tentative dans 2s")
+            time.sleep(2)
         # Nettoyage du fichier 16kHz dans WSL
         if src_for_copy == wsl_16k_path:
             _wsl_sh(f"rm -f '{wsl_16k_path}'", timeout=5)

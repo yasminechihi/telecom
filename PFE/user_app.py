@@ -312,6 +312,55 @@ def _resolve_intent(stored: str, fallback: str) -> str:
     return s if s not in _UNKNOWN_INTENT_SET else (fallback or "").strip()
 
 
+# ══════════════════════════════════════════════════════════
+#  QUESTIONS DE CLARIFICATION HARDCODÉES (fallback quand RAG échoue)
+#  Une question spécifique par type de problème connu — utilisée quand
+#  le RAG ne trouve pas de question de clarification pertinente ou que
+#  la confiance ML est trop faible.
+#  Format test 1 : BOT pose cette question AVANT de demander le numéro.
+#  Format test 2 : après apprentissage, BOT demande directement le numéro.
+# ══════════════════════════════════════════════════════════
+
+_INTENT_CLARI_FALLBACK: dict = {
+    # ── مشكلة في الدفع ─────────────────────────────────────────────────
+    "مشكلة في الدفع":      "عندك رقم المعاملة (numéro de transaction)؟",
+    "مشكله في الدفع":      "عندك رقم المعاملة (numéro de transaction)؟",
+    # ── اعتراض على الفاتورة ────────────────────────────────────────────
+    "اعتراض على الفاتورة": "تحب نثبتولك في ديتاي الاستهلاك؟",
+    "اعتراض على الفاتوره": "تحب نثبتولك في ديتاي الاستهلاك؟",
+    # ── انقطاع الانترنات ───────────────────────────────────────────────
+    "انقطاع الانترنات":    "ثبتلي بربي في الموديم يشعل بالأحمر؟",
+    "انقطاع الانترنت":     "ثبتلي بربي في الموديم يشعل بالأحمر؟",
+    # ── تأخير في التركيب ───────────────────────────────────────────────
+    "تأخير في التركيب":    "عندك رقم المطلب (numéro de demande)؟",
+    "تاخير في التركيب":    "عندك رقم المطلب (numéro de demande)؟",
+    # ── مشكلة في التجوال ───────────────────────────────────────────────
+    "مشكلة في التجوال":    "ثبت اللي الـ Données en itinérance مفعّلة في تليفونك؟",
+    "مشكله في التجوال":    "ثبت اللي الـ Données en itinérance مفعّلة في تليفونك؟",
+    "مشكله في الجوال":     "ثبت اللي الـ Données en itinérance مفعّلة في تليفونك؟",
+}
+
+
+def _get_intent_clari_fallback(intent: str) -> str:
+    """
+    Retourne la question de clarification hardcodée pour un intent connu.
+    Essaie d'abord un lookup exact, puis un lookup normalisé (ة→ه, alef).
+    Retourne "" si aucune question n'est définie pour cet intent.
+    """
+    if not intent:
+        return ""
+    # Lookup direct
+    q = _INTENT_CLARI_FALLBACK.get(intent, "")
+    if q:
+        return q
+    # Lookup normalisé (ة→ه, variantes alef)
+    norm = _norm_intent_key(intent)
+    for k, v in _INTENT_CLARI_FALLBACK.items():
+        if _norm_intent_key(k) == norm:
+            return v
+    return ""
+
+
 # Détecte toutes les formulations "donne-moi un numéro" dans les réponses du dataset :
 #   "اعطيني الرقم"  / "اعطيني رقم المطلب" / "اعطيني رقمك"
 #   "أعطيني رقم الخط" / "أعطيني رقم المطلب"  (avec hamza)
@@ -685,6 +734,38 @@ def _find_session_learned(sess: dict, query_text: str, cur_intent: str = "") -> 
     """
     resp, _ = _find_session_learned_pair(sess, query_text, cur_intent=cur_intent)
     return resp
+
+
+def _find_learned_by_intent(intent: str) -> str | None:
+    """
+    Fallback de récupération : cherche une réponse apprise correspondant UNIQUEMENT
+    par intent (sans comparaison textuelle).
+
+    Utilisé dans deux situations :
+      1. Stage `initial` (test 2) : le texte de la plainte est différent du test 1,
+         donc _find_session_learned_pair échoue sur le matching textuel.
+         Mais si l'intent NLU correspond à un intent stocké en mémoire,
+         on peut quand même déclencher la demande du numéro.
+      2. Stage `waiting_for_request_number` : idem — la plainte originale peut
+         différer légèrement du texte stocké lors de l'apprentissage.
+
+    Retourne le `response_text` de la première entrée trouvée, ou None si aucune.
+    """
+    global _global_learned_responses
+    if not intent or intent in _UNKNOWN_INTENT_SET:
+        return None
+    norm = _norm_intent_key(intent)
+    for entry in _global_learned_responses:
+        stored = (entry.get("intent") or "").strip()
+        if stored and _norm_intent_key(stored) == norm:
+            resp = entry.get("response_text", "")
+            if resp:
+                logger.info(
+                    f"[Learning] _find_learned_by_intent : trouvé par intent "
+                    f"'{intent}' → '{resp[:50]}'"
+                )
+                return resp
+    return None
 
 
 # Démarrage automatique Asterisk dès le lancement de user_app.py
@@ -1207,6 +1288,18 @@ def process_user_message(conv_session_id: str, user_text: str) -> dict:
             _find_session_learned_pair(sess, _orig_prob_nr, cur_intent=_pending_nr)
             if _orig_prob_nr else (None, "")
         )
+        # ── Fallback intent-only ─────────────────────────────────────────────────
+        # Si le matching textuel échoue (original_problem vide ou formulation différente),
+        # on cherche par intent seul. Garantit que le bot retourne toujours la réponse
+        # apprise au test 2 même si le texte du problème a changé.
+        if not _learned_nr and _pending_nr:
+            _learned_nr = _find_learned_by_intent(_pending_nr)
+            if _learned_nr:
+                _stored_intent_nr = _pending_nr
+                logger.info(
+                    f"[{conv_session_id}] Réponse apprise (waiting_for_request_number, "
+                    f"fallback intent-only) pour intent='{_pending_nr}'"
+                )
         if _learned_nr:
             bot_resp = _localize_response(_learned_nr, sess.get("collected_entities"))
             sess["history"].append(("bot", bot_resp))
@@ -1295,6 +1388,22 @@ def process_user_message(conv_session_id: str, user_text: str) -> dict:
         )
         _eff_intent_init = _resolve_intent(_stored_intent_init_m, intent)
         _force_num_init_m = _is_ask_number_intent(_eff_intent_init)
+
+        # ── Fallback intent-only (test 2 avec formulation différente du test 1) ────────
+        # Si le matching textuel/embedding échoue MAIS l'intent NLU courant est un
+        # intent force_num connu, chercher par intent seul dans le store global.
+        # Couvre le cas où l'user reformule son problème entre le test 1 et le test 2
+        # (ex : test 1 "مشكلة في التجوال" → test 2 "الـ Roaming ميعملش").
+        if not _learned_init_m and _is_ask_number_intent(intent):
+            _intent_only_init = _find_learned_by_intent(intent)
+            if _intent_only_init:
+                _learned_init_m   = _intent_only_init
+                _force_num_init_m = True
+                logger.info(
+                    f"[{conv_session_id}] Réponse apprise (initial, fallback intent-only) "
+                    f"pour intent='{intent}'"
+                )
+
         if _learned_init_m and not _force_num_init_m:
             bot_resp = _learned_init_m
             sess["stage"]            = "initial"
@@ -1314,7 +1423,7 @@ def process_user_message(conv_session_id: str, user_text: str) -> dict:
             # Réponse apprise mais l'intent nécessite le numéro de demande.
             # Sauter la clarification et demander directement le numéro (2e appel, intents connus).
             _ask_num_init = getattr(Config, "ASK_REQUEST_NUMBER_MSG",
-                                    "أعطيني رقم الطلب أو المعاملة باش نكمل معك.")
+                                    "أعطيني رقم الطلب أو المعاملة باش نجم نكمّل معاك.")
             sess["stage"]            = "waiting_for_request_number"
             sess["pending_intent"]   = _eff_intent_init or intent
             sess["original_problem"] = user_text
@@ -1348,7 +1457,10 @@ def process_user_message(conv_session_id: str, user_text: str) -> dict:
                         f"needs_loc_intent={_needs_location_intent(intent)} "
                         f"needs_deleg={_needs_delegation(_ents_clari)}")
             # ── Toujours combiner clarification + question localisation ──────
-            if _needs_location_intent(intent):
+            # Exception : les intents force_num (مشكلة في الدفع, التجوال, etc.)
+            # ne nécessitent pas de localisation — ils vont directement au numéro.
+            _clari_force_num = _is_ask_number_intent(intent)
+            if not _clari_force_num and _needs_location_intent(intent):
                 if _needs_delegation(_ents_clari):
                     # Wilaya connue, معتمدية manquante
                     bot_resp += "  " + _build_delegation_question(_ents_clari)
@@ -1358,17 +1470,49 @@ def process_user_message(conv_session_id: str, user_text: str) -> dict:
                     bot_resp += "  " + Config.LOCATION_QUESTION
                     sess["location_in_clari"] = "full"
                 # Si les deux sont déjà connues → pas de question de localisation
-            elif _needs_delegation(_ents_clari):
+            elif not _clari_force_num and _needs_delegation(_ents_clari):
                 # Intent non listé dans LOCATION_DEPENDENT_INTENTS, mais l'user a déjà
                 # mentionné une wilaya → compléter avec la délégation manquante.
                 # Essentiel pour l'analyse NLU et la qualité des réponses RAG localisées.
                 bot_resp += "  " + _build_delegation_question(_ents_clari)
                 sess["location_in_clari"] = "delegation"
             sess["stage"]            = "clarifying"
-            sess["pending_intent"]   = clari.get("intent") or intent
+            # Pour les intents force_num (مشكلة في الدفع, التجوال…), on conserve
+            # TOUJOURS l'intent NLU courant comme pending_intent.  Si on utilisait
+            # clari.get("intent"), le RAG pourrait retourner un intent différent
+            # (ex. "مشكلة في الشبكة") et casser la détection force_num au tour suivant.
+            _clari_intent_store = (
+                intent if _is_ask_number_intent(intent)
+                else (clari.get("intent") or intent)
+            )
+            sess["pending_intent"]   = _clari_intent_store
             sess["original_problem"] = user_text
             sess["history"].append(("bot", bot_resp))
             return {"bot_response": bot_resp, "session_ended": False,
+                    "transferred": False, "statut": "en_cours",
+                    "sujet": intent, "service_type": service_type}
+
+        # ── Fallback : question de clarification hardcodée ────────────────────
+        # Quand le RAG échoue (confiance trop faible ou aucune question trouvée)
+        # MAIS l'intent est un type de problème CONNU ayant une question hardcodée
+        # (مشكلة في الدفع, مشكلة في التجوال, انقطاع الانترنات, تأخير في التركيب,
+        #  اعتراض على الفاتورة) → poser la question spécifique au lieu de transférer.
+        # Cette logique correspond au "test 1" des exemples du dataset :
+        #   USER décrit le problème → BOT pose la question spécifique au type
+        #   (ex : "عندك رقم المعاملة ؟" pour les problèmes de paiement)
+        # "test 2" (après apprentissage) → bot demande directement le numéro (géré plus haut).
+        _fb_clari_q = _get_intent_clari_fallback(intent)
+        if not clari_ok and _fb_clari_q:
+            sess["stage"]            = "clarifying"
+            sess["pending_intent"]   = intent
+            sess["original_problem"] = user_text
+            sess["history"].append(("bot", _fb_clari_q))
+            logger.info(
+                f"[{conv_session_id}] Clarification fallback hardcodée "
+                f"(intent='{intent}', RAG conf={clari.get('confidence', 0):.2f}) : "
+                f"'{_fb_clari_q}'"
+            )
+            return {"bot_response": _fb_clari_q, "session_ended": False,
                     "transferred": False, "statut": "en_cours",
                     "sujet": intent, "service_type": service_type}
 
@@ -1402,7 +1546,7 @@ def process_user_message(conv_session_id: str, user_text: str) -> dict:
             elif _learned_unknown and _force_num_unk_mob:
                 # Réponse apprise mais numéro requis → demander d'abord le numéro
                 _ask_num_unk_mob = getattr(Config, "ASK_REQUEST_NUMBER_MSG",
-                                           "أعطيني رقم الطلب أو المعاملة باش نكمل معك.")
+                                           "أعطيني رقم الطلب أو المعاملة باش نجم نكمّل معاك.")
                 sess["stage"]            = "waiting_for_request_number"
                 sess["pending_intent"]   = _eff_intent_unk or intent
                 sess["original_problem"] = user_text
@@ -1529,7 +1673,18 @@ def process_user_message(conv_session_id: str, user_text: str) -> dict:
         _update_entities(sess, {}, user_text)   # extraction regex sur la réponse actuelle
         _ents_step2 = sess.get("collected_entities", {})
 
-    if _needs_location(_ents_step2, _intent_step2) and not _asked_full_loc:
+    # ── Court-circuit localisation pour les intents "numéro obligatoire" ─────────
+    # Pour مشكلة في الدفع, اعتراض على الفاتورة, انقطاع الانترنات,
+    # تأخير في التركيب, مشكلة في التجوال :
+    # Ces cas vont directement à la demande du numéro (test 1 : via RAG / test 2 : appris).
+    # Demander la wilaya/معتمدية APRÈS la question de clarification serait hors-sujet
+    # et ne correspond pas aux exemples du dataset (ex : l'user qui est "لبرا" pour التجوال).
+    # → Sauter les checks de localisation pour ces intents.
+    _force_num_step2_loc = _is_ask_number_intent(
+        (sess.get("pending_intent") or active_intent or "").strip()
+    )
+
+    if not _force_num_step2_loc and _needs_location(_ents_step2, _intent_step2) and not _asked_full_loc:
         # Cas 1 : ni wilaya ni معتمدية — demander les deux.
         # Ne pas redemander si "full" a déjà été posée (éviter boucle infinie).
         bot_resp = Config.LOCATION_QUESTION
@@ -1542,7 +1697,7 @@ def process_user_message(conv_session_id: str, user_text: str) -> dict:
         return {"bot_response": bot_resp, "session_ended": False,
                 "transferred": False, "statut": "en_cours",
                 "sujet": _intent_step2, "service_type": service_type}
-    elif _needs_delegation(_ents_step2):
+    elif not _force_num_step2_loc and _needs_delegation(_ents_step2):
         # Cas 2 : wilaya connue mais معتمدية manquante.
         # Déclenché QUEL QUE SOIT l'intent (pas seulement LOCATION_DEPENDENT_INTENTS) car :
         #   - le NLU peut mal classifier l'intent (ex. réseau → تغيير الخدمة)
@@ -1595,7 +1750,7 @@ def process_user_message(conv_session_id: str, user_text: str) -> dict:
         # Réponse apprise mais numéro requis → demander le numéro d'abord
         # (la réponse apprise sera donnée à waiting_for_request_number)
         _ask_num_step2 = getattr(Config, "ASK_REQUEST_NUMBER_MSG",
-                                 "أعطيني رقم الطلب أو المعاملة باش نكمل معك.")
+                                 "أعطيني رقم الطلب أو المعاملة باش نجم نكمّل معاك.")
         sess["stage"] = "waiting_for_request_number"
         if not sess.get("pending_intent"):
             sess["pending_intent"] = _eff_intent_step2 or _step2_intent
@@ -1678,7 +1833,7 @@ def process_user_message(conv_session_id: str, user_text: str) -> dict:
         # (la réponse apprise sera donnée à waiting_for_request_number)
         if _force_num_esc:
             _ask_num = getattr(Config, "ASK_REQUEST_NUMBER_MSG",
-                               "أعطيني رقم الطلب أو المعاملة باش نكمل معك.")
+                               "أعطيني رقم الطلب أو المعاملة باش نجم نكمّل معاك.")
             sess["stage"] = "waiting_for_request_number"
             if not sess.get("pending_intent"):
                 sess["pending_intent"] = active_intent
@@ -1734,11 +1889,17 @@ def process_user_message(conv_session_id: str, user_text: str) -> dict:
     #
     # Cas 1 : ni wilaya ni délégation → demander les deux.
     # Cas 2 : wilaya connue mais délégation manquante → demander la délégation seule.
+    #
+    # EXCEPTION : pour les intents "numéro obligatoire" (force_num), on saute ce check.
+    # Ces cas (مشكلة في الدفع, التجوال, etc.) vont directement vers la demande du numéro.
     _ents_rag_chk   = sess.get("collected_entities", {})
     _chk_rag_intent = (sess.get("pending_intent") or active_intent or "").strip()
+    _force_num_rag_loc = _is_ask_number_intent(_chk_rag_intent)
     _rag_needs_loc  = (
-        _needs_location_intent(_chk_rag_intent)   # A : intent location-dépendant
-        or _response_has_wilaya(bot_resp)           # B : réponse RAG contient une wilaya
+        not _force_num_rag_loc and (
+            _needs_location_intent(_chk_rag_intent)   # A : intent location-dépendant
+            or _response_has_wilaya(bot_resp)           # B : réponse RAG contient une wilaya
+        )
     )
     if _rag_needs_loc and _needs_location(_ents_rag_chk, _chk_rag_intent) and not _asked_full_loc:
         # Cas 1 : aucune localisation connue
@@ -1756,7 +1917,7 @@ def process_user_message(conv_session_id: str, user_text: str) -> dict:
         return {"bot_response": loc_q, "session_ended": False,
                 "transferred": False, "statut": "en_cours",
                 "sujet": active_intent, "service_type": service_type}
-    elif _needs_delegation(_ents_rag_chk):
+    elif not _force_num_rag_loc and _needs_delegation(_ents_rag_chk):
         # Cas 2 : wilaya connue mais délégation manquante — TOUS les intents.
         # Le NLU peut mal classifier (ex. réseau → تغيير الخدمة) ; on demande
         # la délégation dès que l'user a mentionné une wilaya, pour la qualité
@@ -1808,7 +1969,7 @@ def process_user_message(conv_session_id: str, user_text: str) -> dict:
         elif _learned_p5 and _force_num_p5:
             # Réponse apprise mais numéro requis → demander d'abord le numéro
             _ask_num_p5_mob = getattr(Config, "ASK_REQUEST_NUMBER_MSG",
-                                      "أعطيني رقم الطلب أو المعاملة باش نكمل معك.")
+                                      "أعطيني رقم الطلب أو المعاملة باش نجم نكمّل معاك.")
             sess["stage"] = "waiting_for_request_number"
             if not sess.get("pending_intent"):
                 sess["pending_intent"] = _eff_intent_p5 or active_intent
@@ -1859,7 +2020,7 @@ def process_user_message(conv_session_id: str, user_text: str) -> dict:
     )
     if _force_num_rag and not _ASK_NUMBER_RE.search(bot_resp):
         _ask_num_rag = getattr(Config, "ASK_REQUEST_NUMBER_MSG",
-                               "أعطيني رقم الطلب أو المعاملة باش نكمل معك.")
+                               "أعطيني رقم الطلب أو المعاملة باش نجم نكمّل معاك.")
         # Remplacer la réponse RAG déjà ajoutée dans l'historique par la demande de numéro
         if sess["history"] and sess["history"][-1][0] == "bot":
             sess["history"][-1] = ("bot", _ask_num_rag)
