@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:typed_data';
+import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import '../models/user_model.dart';
@@ -9,43 +10,59 @@ import 'discovery_service.dart';
 //  Service API — se connecte au backend Flask (user_app.py)
 //  Port 5001 — même base de données Firebase Firestore
 //
-//  Stratégie : toutes les routes /api/mobile/* acceptent
-//  {"user_id": "..."} dans le body JSON → pas besoin de cookie.
+//  Stratégie : 
+//    - WEB : utilise localhost (même machine)
+//    - MOBILE : IP dynamique (découverte UDP ou mémorisée)
 // ════════════════════════════════════════════════════════════
 
 class ApiService {
-  // ── URL de base ───────────────────────────────────────────
-  // L'IP du serveur est stockée dans SharedPreferences (clé 'server_ip').
-  // Par défaut : 192.168.1.224 (WiFi maison).
-  // Pour changer l'IP sans recompiler : utiliser ApiService().setServerIp(newIp)
-  // ou l'écran Paramètres de l'app.
-  //
-  // Astuce réseau :
-  //   WiFi maison         → Windows: ipconfig  → "Adresse IPv4"  ex: 192.168.1.224
-  //   Partage téléphone   → Windows: ipconfig  → nouvelle IP     ex: 192.168.43.x
-  //   Émulateur Android   → utiliser 10.0.2.2 (alias localhost émulateur)
-  static const String _defaultServerIp = '192.168.100.6';
   static const String _keyServerIp     = 'server_ip';
+  static const int    _port            = 5001;
+  
+  // L'IP par défaut n'est plus codée en dur ; elle sera soit localhost (web)
+  // soit chargée depuis SharedPreferences (mobile). Si aucune IP n'est trouvée
+  // sur mobile, la découverte UDP sera automatiquement tentée lors de la
+  // première connexion.
+  String? _serverIp;  // null = non encore chargé/inconnu
 
-  String _serverIp = _defaultServerIp;
-
-  String get baseUrl => 'http://$_serverIp:5001';
-
-  /// Charge l'IP depuis SharedPreferences (à appeler au démarrage).
-  Future<void> loadServerIp() async {
-    final prefs = await SharedPreferences.getInstance();
-    _serverIp = prefs.getString(_keyServerIp) ?? _defaultServerIp;
+  String get baseUrl {
+    if (kIsWeb) {
+      // ✅ Sur le navigateur : toujours localhost
+      return 'http://localhost:$_port';
+    }
+    // ✅ Sur mobile : utiliser l'IP chargée (obligatoire)
+    if (_serverIp == null) {
+      throw Exception('ApiService non initialisé. Appeler loadServerIp() au démarrage.');
+    }
+    return 'http://$_serverIp:$_port';
   }
 
-  /// Change l'IP du serveur et la persiste dans SharedPreferences.
+  /// Charge l'IP depuis SharedPreferences (à appeler impérativement au démarrage).
+  /// Si aucune IP n'est stockée, _serverIp reste null et la découverte
+  /// sera déclenchée automatiquement lors du premier appel login/register.
+  Future<void> loadServerIp() async {
+    if (kIsWeb) {
+      _serverIp = 'localhost'; // valeur fictive, mais baseUrl utilise kIsWeb
+      return;
+    }
+    final prefs = await SharedPreferences.getInstance();
+    _serverIp = prefs.getString(_keyServerIp);
+    // Si null, la découverte UDP sera tentée plus tard.
+  }
+
+  /// Change l'IP du serveur et la persiste (mobile uniquement).
   Future<void> setServerIp(String ip) async {
+    if (kIsWeb) return;
     _serverIp = ip.trim();
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setString(_keyServerIp, _serverIp);
+    await prefs.setString(_keyServerIp, _serverIp!);
   }
 
-  /// Retourne l'IP actuellement configurée.
-  String get currentServerIp => _serverIp;
+  /// Retourne l'IP actuellement configurée (mobile) ou "localhost" (web).
+  String get currentServerIp {
+    if (kIsWeb) return 'localhost';
+    return _serverIp ?? 'inconnue';
+  }
 
   // ── Clés SharedPreferences ────────────────────────────────
   static const String _keyUserId     = 'user_id';
@@ -76,21 +93,21 @@ class ApiService {
   }
 
   // ════════════════════════════════════════════════════════
-  //  AUTHENTIFICATION
+  //  AUTHENTIFICATION — avec fallback découverte UDP (mobile)
   // ════════════════════════════════════════════════════════
 
-  /// Connexion — renvoie null si succès, message d'erreur sinon.
-  /// Si le serveur configuré est inaccessible, tente une découverte
-  /// automatique UDP sur le réseau local avant d'abandonner.
   Future<String?> login(String email, String password) async {
     // 1ère tentative avec l'IP actuelle
-    final result = await _tryLogin(email, password);
+    var result = await _tryLogin(email, password);
     if (result != _kServerUnavailable) return result;
 
-    // Serveur non joignable → découverte automatique UDP
+    // Si c'est la version web, inutile de chercher une IP : le serveur n'est pas dispo
+    if (kIsWeb) return _kServerUnavailable;
+
+    // Serveur non joignable sur mobile → découverte automatique UDP
     final discoveredIp = await DiscoveryService.findServer();
     if (discoveredIp != null && discoveredIp != _serverIp) {
-      await setServerIp(discoveredIp); // mémorise la nouvelle IP
+      await setServerIp(discoveredIp);
       return await _tryLogin(email, password);
     }
 
@@ -98,7 +115,7 @@ class ApiService {
   }
 
   static const String _kServerUnavailable =
-      'Serveur non disponible. Lancez user_app.py (port 5001).';
+      'Serveur non disponible. Lancez user_app.py (port $_port).';
 
   Future<String?> _tryLogin(String email, String password) async {
     try {
@@ -123,7 +140,6 @@ class ApiService {
     }
   }
 
-  /// Inscription
   Future<String?> register({
     required String email,
     required String password,
@@ -132,12 +148,14 @@ class ApiService {
     required String telephone,
   }) async {
     // 1ère tentative avec l'IP actuelle
-    final result = await _tryRegister(
+    var result = await _tryRegister(
         email: email, password: password,
         nom: nom, prenom: prenom, telephone: telephone);
     if (result != _kServerUnavailable) return result;
 
-    // Serveur non joignable → découverte automatique UDP
+    if (kIsWeb) return _kServerUnavailable;
+
+    // Serveur non joignable sur mobile → découverte automatique UDP
     final discoveredIp = await DiscoveryService.findServer();
     if (discoveredIp != null && discoveredIp != _serverIp) {
       await setServerIp(discoveredIp);
@@ -181,14 +199,13 @@ class ApiService {
     }
   }
 
-  /// Déconnexion
   Future<void> logout() async {
     _userId = null;
     await _clearUser();
   }
 
   // ════════════════════════════════════════════════════════
-  //  PROFIL & STATS  — routes /api/mobile/* (sans session)
+  //  PROFIL & STATS  — routes /api/mobile/*
   // ════════════════════════════════════════════════════════
 
   Future<UserModel?> getProfile() async {
@@ -306,7 +323,6 @@ class ApiService {
         return jsonDecode(resp.body) as Map<String, dynamic>;
       }
 
-      // Erreur HTTP : renvoie un message lisible plutôt que null
       String errMsg;
       try {
         final errData = jsonDecode(resp.body) as Map<String, dynamic>;
@@ -317,14 +333,12 @@ class ApiService {
       return {'bot_response': errMsg, 'error': true};
     } on Exception catch (e) {
       final msg = e.toString().contains('TimeoutException')
-          ? 'Le serveur ne répond pas. Vérifiez que user_app.py est lancé (port 5001).'
+          ? 'Le serveur ne répond pas. Vérifiez que user_app.py est lancé (port $_port).'
           : 'Connexion impossible. Vérifiez votre réseau et que user_app.py est lancé.';
       return {'bot_response': msg, 'error': true};
     }
   }
 
-  /// Vérifie si l'agent a raccroché après un transfert.
-  /// Retourne null en cas d'erreur réseau.
   Future<Map<String, dynamic>?> getCallStatus(String convId) async {
     if (convId.isEmpty) return null;
     try {
@@ -367,16 +381,9 @@ class ApiService {
   }
 
   // ════════════════════════════════════════════════════════
-  //  STT — Whisper backend (meilleur pour darija tunisienne)
-  //  Envoie un fichier audio WAV au backend et retourne la transcription.
-  //  Retourne null si le backend est inaccessible (fallback speech_to_text).
+  //  STT — Whisper backend
   // ════════════════════════════════════════════════════════
 
-  /// Envoie un fichier audio au backend Whisper et retourne la transcription.
-  /// [filePath] : chemin vers le fichier audio (WAV/OGG/M4A).
-  /// Utilise /api/mobile/stt (sans session requise) — même moteur Whisper
-  /// que l'interface web, optimisé pour la darija tunisienne.
-  /// Retourne null si le backend est inaccessible.
   Future<String?> sttFromAudio(String filePath) async {
     try {
       final request = http.MultipartRequest(
@@ -397,14 +404,9 @@ class ApiService {
   }
 
   // ════════════════════════════════════════════════════════
-  //  TTS — edge-tts backend (ar-TN-ReemNeural)
-  //  Même voix que l'interface web
+  //  TTS — edge-tts backend
   // ════════════════════════════════════════════════════════
 
-  /// Envoie le texte au backend edge-tts et retourne les bytes MP3.
-  /// Utilise /api/mobile/tts (sans session requise) — même voix que l'interface
-  /// web (ar-TN-ReemNeural via edge-tts Microsoft Neural TTS).
-  /// Retourne null si le backend est inaccessible (fallback flutter_tts).
   Future<Uint8List?> getTtsAudio(String text) async {
     try {
       final resp = await http.post(

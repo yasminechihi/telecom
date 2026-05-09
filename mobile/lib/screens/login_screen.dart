@@ -98,13 +98,24 @@ class _LoginScreenState extends State<LoginScreen> {
           // Logo
           const TTLogo(size: 44, onDark: false),
           const SizedBox(width: 12),
-          const Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text('Tunisie Telecom', style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700, color: TTColors.purple, fontFamily: 'Cairo')),
-              Text('Mon Espace Client', style: TextStyle(fontSize: 11, color: TTColors.muted, fontFamily: 'Cairo')),
-            ],
+          // Utilisation d'Expanded pour éviter le débordement
+          Expanded(
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: const [
+                Text(
+                  'Tunisie Telecom',
+                  style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700, color: TTColors.purple, fontFamily: 'Cairo'),
+                  overflow: TextOverflow.ellipsis,
+                ),
+                Text(
+                  'Mon Espace Client',
+                  style: TextStyle(fontSize: 11, color: TTColors.muted, fontFamily: 'Cairo'),
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ],
+            ),
           ),
           const Spacer(),
           // Bouton paramètres réseau (changer l'IP du serveur)
@@ -220,6 +231,7 @@ class _LoginScreenState extends State<LoginScreen> {
     return container;
   }
 
+  // Correction : ajout d'Expanded autour du Text pour éviter le débordement
   Widget _featureRow(IconData icon, String label) {
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 6),
@@ -227,7 +239,12 @@ class _LoginScreenState extends State<LoginScreen> {
         children: [
           Icon(icon, color: TTColors.teal, size: 18),
           const SizedBox(width: 10),
-          Text(label, style: TextStyle(color: Colors.white.withOpacity(0.85), fontSize: 13, fontFamily: 'Cairo')),
+          Expanded(
+            child: Text(
+              label,
+              style: TextStyle(color: Colors.white.withOpacity(0.85), fontSize: 13, fontFamily: 'Cairo'),
+            ),
+          ),
         ],
       ),
     );
@@ -320,9 +337,9 @@ class _LoginScreenState extends State<LoginScreen> {
             ),
             const SizedBox(height: 18),
 
-            // Lien inscription
-            Row(
-              mainAxisAlignment: MainAxisAlignment.center,
+            // Lien inscription - utilisation de Wrap au lieu de Row pour éviter débordement
+            Wrap(
+              alignment: WrapAlignment.center,
               children: [
                 const Text("Pas encore de compte ? ", style: TextStyle(fontSize: 13, color: TTColors.muted, fontFamily: 'Cairo')),
                 GestureDetector(

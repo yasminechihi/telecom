@@ -6,3 +6,16 @@ PFE/nul
 build/
 .flutter-plugins*
 .flutter-plugins-dependencies
+# cache
+PFE/.cache_local/
+
+# data locale
+PFE/data/
+
+# secrets
+PFE/config.py
+PFE/import_dataset_supabase.py
+
+# python
+__pycache__/
+.env
