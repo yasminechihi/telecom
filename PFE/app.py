@@ -199,10 +199,10 @@ _CALLBACK_NUMBER_RE = re.compile(r'خلّ?[يا][لن]ي\s*رقمك', re.UNICODE
 # ── Intents qui nécessitent TOUJOURS le numéro de demande avant réponse ───────
 _ASK_NUMBER_INTENTS_NORM: frozenset = frozenset(
     _norm_intent_key(k) for k in {
-        "مشكلة في الدفع",    "مشكله في الدفع",
-        "اعتراض على الفاتورة", "اعتراض على الفاتوره",
-        "انقطاع الانترنات",  "انقطاع الانترنت",
-        "تأخير في التركيب",  "تاخير في التركيب",
+        "مشكلة في الدفع",
+        "اعتراض على الفاتورة",
+        "انقطاع الانترنات",
+        "تأخير في التركيب",
     }
 )
 

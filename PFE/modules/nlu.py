@@ -1,11 +1,5 @@
 # ============================================================
-#  modules/nlu.py — Natural Language Understanding
-#  Stratégie hybride : Modèles ML (ML.ipynb) + Règles regex
-#
-#  Priorité :
-#    1. MLPredictor (TF-IDF + LogisticRegression de ML.ipynb)
-#       → issue_type, sentiment, service, wilaya, action, decision
-#    2. Règles regex (fallback si modèles non disponibles)
+# Objectif : comprendre ce que dit l'utilisateur
 # ============================================================
 
 import re
@@ -14,9 +8,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 # ══════════════════════════════════════════════════════════════
-#  Mapping délégation → gouvernorat (pour correction NLU)
-#  Si l'user mentionne explicitement une délégation/ville,
-#  on corrige la wilaya même si le ML l'a mal prédicte.
+#  Si le modèle ML se trompe, on corrige ici
 # ══════════════════════════════════════════════════════════════
 DELEGATION_WILAYA_MAP = {
     # ── 1. تونس ──────────────────────────────────────────────────
@@ -195,41 +187,33 @@ DELEGATION_WILAYA_MAP = {
     "ذهيبة": "تطاوين",            "الصمار": "تطاوين",
 }
 
-# ── Patterns regex (fallback uniquement) ─────────────────────
+# ── Patterns regex (fallback uniquement) Si ML ne marche pas, on détecte l’intention avec des mots-clés
 INTENT_PATTERNS = {
-    "عطل في الشبكه":              [r"ريزو|réseau|شبكة|كونيكسيون|4g|5g|3g|سيغنال|signal|باغ|ما عندي شبكة"],
-    "بطء في الانترنت":             [r"بطي|lent|ما يمشيش|يقطع|تحميل|تنزيل|débits?|download|upload|vitesse|سرعة"],
-    "انقطاع الانترنت":             [r"قطع|coupure|انقطع|ما عندي.*internet|ما فماش.*internet"],
-    "مشكله في اشاره الويفي":       [r"وايفي|wifi|wi-fi|بوكس|box|livebox|routeur|راوتر"],
-    "مشكله في الدفع":              [r"خلص|paiement|دفع|payé|facture|فاتورة|MyTT|virement|recharge"],
-    "اعتراض على الفاتوره":         [r"فاتورة.*غالية|contestation|اعتراض.*فاتورة|مش عادل|erreur.*facture"],
+    "عطل في الشبكة":               [r"ريزو|réseau|شبكة|كونيكسيون|4g|5g|3g|سينيال|signal|باغ|ما عندي شبكة"],
+    "بطء في الانترنات":            [r"بطي|lent|ما يمشيش|يقطع|تحميل|تنزيل|débits?|download|upload|vitesse|سرعة"],
+    "انقطاع الانترنات":            [r"قطع|coupure|انقطع|ما عندي.*internet|ما فماش.*internet"],
+    "مشكلة في إشارة الويفي":       [r"وايفي|wifi|wi-fi|بوكس|box|livebox|routeur|راوتر"],
+    "مشكلة في الدفع":              [r"خلص|paiement|دفع|payé|facture|فاتورة|MyTT|virement|recharge"],
+    "اعتراض على الفاتورة":         [r"فاتورة.*غالية|contestation|اعتراض.*فاتورة|مش عادل|erreur.*facture"],
     "استفسار عن الرصيد":           [r"رصيد|solde|كريديت|crédit|ما بقاش|consommation|استهلاك"],
     "استفسار عن العروض":           [r"عرض|offre|forfait|formule|abonnement|أبونمو|promotion"],
-    "مشكله في الجوال":             [r"roaming|تجوال|برا|l'étranger|international|données.*itinérance"],
-    "تاخير في التركيب":            [r"تركيب|installation|technicien|تقني|تأخير|date.*visite|موعد"],
-    "تبديل شريحه":                 [r"sim|شريحة|بدل|remplacement|perdu|مفقودة|cassé|مكسورة"],
-    "تغيير الخدمه":                [r"تغيير|changer|migration|upgrader|basculer|formule"],
+    "مشكلة في التجوال":            [r"roaming|تجوال|برا|l'étranger|international|données.*itinérance"],
+    "تأخير في التركيب":            [r"تركيب|installation|technicien|تقني|تأخير|date.*visite|موعد"],
+    "تبديل شريحة":                 [r"sim|شريحة|بدل|remplacement|perdu|مفقودة|cassé|مكسورة"],
+    "تغيير الخدمة":                [r"تغيير|changer|migration|upgrader|basculer|formule"],
     "عطب في الجهاز":               [r"جهاز|appareil|décodeur|IPTV|téléviseur|تلفزة|boîtier"],
-    "استفسار عن التغطيه":          [r"تغطية|couverture|منطقة|zone|بعيد|rural|campagne|ريف"],
+    "استفسار عن التغطية":          [r"تغطية|couverture|منطقة|zone|بعيد|rural|campagne|ريف"],
 }
 
 STOP_PATTERNS = [
     # Formules de clôture / adieu classiques (arabe + translittération + français)
     r"وداعا|باي|بسلامة|yezzi|خلاص|شكرن|merci|au revoir|fin|سلام",
-    # Formules de remerciement en arabe (darija tunisienne) — avec et sans diacritiques
-    #   يعطيك الصحة / يعطيك ألف صحة / يعطيك ألف الصحة / يعطيك صحة
     r"يعطيك\s*(?:الف)?\s*(?:ال)?\s*صحة",
-    #   عيشك / يعيشك
     r"\bعيشك\b|\bيعيشك\b",
-    #   يرحم والديك (+ variantes والدينك, والدك)
     r"يرحم\s*والد(?:ي|ي?ن)?ك|يرحم\s*بوك",
-    #   بارك الله فيك
     r"بارك\s*الله\s*فيك",
-    #   ربي يفضلك
     r"ربي\s*يفضلك|ربي\s*يعطيك|ربي\s*يبارك",
-    #   شكرا / شكراً (diacritiques retirés par _normalize)
     r"\bشكرا\b|\bشكراً\b",
-    # Translittérations latines (tout est comparé en lowercase par _normalize)
     r"\byaatik(?:\s+(?:el\s+)?s?saha|\s+alf\s+saha)?\b",
     r"\b(?:3)?aychek\b|\ba[iy]chek\b",
     r"\byarhem\s+weldik\b|\byarhem\s+bouk\b",
@@ -238,16 +222,11 @@ STOP_PATTERNS = [
     r"\bchokran\b|\bshokran\b",
     r"\bmerci\s+beaucoup\b|\bthanks?\b|\bthank\s+you\b",
 ]
-
-
+# ============================================================
+# CLASSE PRINCIPALE NLU
+#transforme texte → intent + entités + sentiment + décision
+# ============================================================
 class NLUModule:
-    """
-    Module NLU hybride : ML.ipynb + règles regex de secours.
-
-    Méthode principale : analyze(text) → dict complet
-    avec intent, entités, sentiment, localisation, action, décision.
-    """
-
     def __init__(self, config, ml_predictor=None):
         """
         Args:
@@ -256,9 +235,9 @@ class NLUModule:
                            les modèles ne sont pas encore générés)
         """
         self.config       = config
-        self.ml           = ml_predictor  # Injecté depuis voicebot_main.py
-        self._patterns    = self._compile_patterns()
-        self._stop_re     = re.compile("|".join(STOP_PATTERNS), re.IGNORECASE | re.UNICODE)
+        self.ml           = ml_predictor  # 👉 modèle ML injecté (peut être None)
+        self._patterns    = self._compile_patterns()  # compile regex une seule fois (optimisation performance)
+        self._stop_re     = re.compile("|".join(STOP_PATTERNS), re.IGNORECASE | re.UNICODE) #  transforme STOP_PATTERNS en regex globale rapide
 
         if self.ml and self.ml.is_available:
             logger.info("NLU → Mode ML actif (modèles ML.ipynb chargés).")
@@ -269,7 +248,7 @@ class NLUModule:
     # Compilation des patterns regex
     # ─────────────────────────────────────────────────────────
     def _compile_patterns(self) -> dict:
-        """Compile les regex pour de meilleures performances."""
+        """transforme les strings regex en objets compilés  plus rapide à l exécution"""
         compiled = {}
         for intent, pats in INTENT_PATTERNS.items():
             compiled[intent] = re.compile("|".join(pats), re.IGNORECASE | re.UNICODE)
@@ -279,48 +258,33 @@ class NLUModule:
     # Analyse principale
     # ─────────────────────────────────────────────────────────
     def analyze(self, text: str) -> dict:
-        """
-        Analyse complète d'un utterance client.
-
-        Stratégie :
-          - Si MLPredictor disponible → utilise generate_ai_output()
-            de ML.ipynb pour toutes les prédictions
-          - Sinon → fallback sur les règles regex
-
-        Returns:
-            {
-                intent, confidence, sentiment, entities,
-                wilaya, delegation, action, decision,
-                is_stop, text, ml_used
-            }
-        """
+        """entrée : texte utilisateur  sortie : structure complète (intent, sentiment, etc.)"""
         if not text:
             return self._empty_result(text)
 
         # Détection mot de clôture (prioritaire dans tous les cas)
         is_stop = bool(self._stop_re.search(self._normalize(text)))
-        if is_stop:
+        if is_stop: # si utilisateur dit merci → arrêt conversation
             return {**self._empty_result(text), "is_stop": True}
-
-        # ── Voie principale : Modèles ML (ML.ipynb) ───────────
-        # Seuil minimum : si ML donne < 30% de confiance → regex plus fiable
-        ML_MIN_CONFIDENCE = 0.30
+        # ====================================================
+        # 2. MODE ML (prioritaire)
+        # ====================================================
+        ML_MIN_CONFIDENCE = 0.30 # seuil : si ML est trop faible → fallback regex
 
         if self.ml and self.ml.is_available:
             try:
                 ml_result = self._analyze_with_ml(text, is_stop=False)
                 ml_conf   = ml_result.get("confidence", 0.0)
 
-                if ml_conf >= ML_MIN_CONFIDENCE:
+                if ml_conf >= ML_MIN_CONFIDENCE:  # CAS 1 : ML fiable
                     return ml_result
 
-                # ML trop incertain → fusionner avec regex pour corriger l'intent
                 import logging as _lg
                 _lg.getLogger("nlu").info(
                     f"ML conf {ml_conf:.2f} < {ML_MIN_CONFIDENCE} → fusion regex"
                 )
-                regex_result = self._analyze_with_rules(text, is_stop=False)
-                # Garder les entités ML (wilaya, délégation) mais prendre l'intent regex
+                regex_result = self._analyze_with_rules(text, is_stop=False) # CAS 2 : ML pas sûr → fusion avec regex
+                # on garde ML mais on corrige l'intent regex
                 if regex_result.get("intent") not in ("غير محدد", "", None):
                     ml_result["intent"]      = regex_result["intent"]
                     ml_result["confidence"]  = regex_result.get("confidence", ml_conf)
@@ -353,7 +317,7 @@ class NLUModule:
         """Utilise les modèles de ML.ipynb pour l'analyse complète."""
         ml_output = self.ml.generate_ai_output(text)
 
-        # Convertir la décision ML en flag d'escalade
+        # décision escalade (agent humain ou non)
         escalate = (ml_output["decision"] == "escalade_agent_humain")
 
         # Construire les entités ML d'abord
@@ -364,14 +328,10 @@ class NLUModule:
             "phone_number":   self._extract_phone(text),
             "transaction_id": self._extract_transaction(text),
         }
-
-        # Correction : si l'user mentionne une ville/délégation dans son texte,
-        # on corrige wilaya et delegation (le ML prédit souvent "تونس" par défaut)
-        entities = self._fix_location_from_text(text, entities)
+        entities = self._fix_location_from_text(text, entities) #si utilisateur mentionne une ville → correction ML
 
         # Cohérence ML : si aucune localisation explicite dans le texte mais que
         # le ML a prédit une délégation présente dans la map, on corrige la wilaya.
-        # Exemple : ML prédit delegation="الشابة" wilaya="تونس" → on force wilaya="المهدية"
         if not entities.get("location_explicit", False):
             ml_deleg = entities.get("delegation", "")
             if ml_deleg and ml_deleg in DELEGATION_WILAYA_MAP:
@@ -421,24 +381,23 @@ class NLUModule:
     def _analyze_with_rules(self, text: str, is_stop: bool) -> dict:
         """Analyse basée sur les règles regex (fallback)."""
         text_norm      = self._normalize(text)
-        matched        = [i for i, p in self._patterns.items() if p.search(text_norm)]
-        primary_intent = matched[0] if matched else "غير محدد"
-        confidence     = min(0.75, 0.4 + 0.12 * len(matched)) if matched else 0.2
+        matched        = [i for i, p in self._patterns.items() if p.search(text_norm)] # Détection des intents via regex
+        primary_intent = matched[0] if matched else "غير محدد" #si plusieurs intents détectés : on prend le premier comme principal
+        confidence     = min(0.75, 0.4 + 0.12 * len(matched)) if matched else 0.2    #  Plus il y a de patterns détectés :plus la confiance augmente
 
         sentiment      = self._rule_sentiment(text_norm)
         phone          = self._extract_phone(text)
         txn            = self._extract_transaction(text)
-        service        = self._rule_service(text_norm)
+        service        = self._rule_service(text_norm)   # Détection type service :  Mobile / Fibre / Billing / Réseau...
 
         entities = {
             "wilaya":         None,
-            "delegation":     None,
-            "service_type":   service,
+            "delegation":     None, # Délégation non connue au départ
+            "service_type":   service, # Type de service détecté
             "phone_number":   phone,
-            "transaction_id": txn,
+            "transaction_id": txn, # ID transaction extrait 
         }
-        # Correction localisation depuis le texte brut (même en mode règles)
-        entities = self._fix_location_from_text(text, entities)
+        entities = self._fix_location_from_text(text, entities)  # Correction localisation depuis le texte brut (même en mode règles)
 
         result = {
             "intent":      primary_intent,
@@ -466,42 +425,22 @@ class NLUModule:
         Permet d'injecter le MLPredictor après l'initialisation.
         Utile si les modèles sont générés en cours d'exécution.
         """
-        self.ml = ml_predictor
-        if self.ml and self.ml.is_available:
-            logger.info("NLU → MLPredictor injecté avec succès.")
+        self.ml = ml_predictor  # Stocke le modèle ML
+        if self.ml and self.ml.is_available:  # Vérifie disponibilité
+            logger.info("NLU → MLPredictor injecté avec succès.") # Log succès
 
     # ─────────────────────────────────────────────────────────
     # Correction de localisation par scan du texte brut
     # ─────────────────────────────────────────────────────────
     @staticmethod
     def _normalize_ar(s: str) -> str:
-        """
-        Normalisation arabe pour la comparaison de localisation :
-          - Supprime les diacritiques (تشكيل) : ً ٌ ٍ َ ُ ِ ّ ْ ...
-          - Normalise les variantes de Alef : إ أ آ → ا
-        Permet de matcher "قَصْر هِلال" = "قصر هلال", "أريانة" = "اريانة", etc.
-        """
-        s = re.sub(r'[\u064B-\u065F\u0670]', '', s)   # diacritiques
+        """Nettoyage spécial arabe pour comparer les villes."""
+        s = re.sub(r'[\u064B-\u065F\u0670]', '', s)   # Suppression  diacritiques   َ ُ ِ ّ ْ ً ٌ ٍ
         s = re.sub(r'[إأآ]', 'ا', s)                   # normalisation alef
         return s
 
-    def _fix_location_from_text(self, text: str, entities: dict) -> dict:
-        """
-        Post-traitement : si l'user mentionne explicitement une délégation/ville
-        connue dans son texte, on corrige wilaya et delegation dans les entités,
-        même si le modèle ML les a mal prédites.
-
-        Priorité : texte brut > prédiction ML (le ML prédit souvent "تونس" par défaut).
-
-        Stratégie en 2 passes :
-          Passe 1 — Vraies délégations (clé ≠ valeur dans la map) : ex "قصر هلال"→"المنستير"
-          Passe 2 — Capitales de wilaya (clé = valeur) : ex "المنستير"→"المنستير"
-        Cette séparation garantit que "قصر هلال" est toujours reconnu en tant que
-        délégation AVANT que "المنستير" (capitale de même longueur) ne soit testé.
-
-        La normalisation arabe (diacritiques, alef) permet de matcher les
-        transcriptions Whisper qui peuvent ajouter des voyelles.
-        """
+    def _fix_location_from_text(self, text: str, entities: dict) -> dict: # Correction localisation depuis texte utilisateur
+        """Corrige wilaya + délégation à partir du texte brut. Priorité : texte utilisateur > prédiction ML"""
         if not text:
             return entities
 
@@ -511,55 +450,41 @@ class NLUModule:
         true_delegations = {k: v for k, v in DELEGATION_WILAYA_MAP.items() if k != v}
         wilaya_capitals  = {k: v for k, v in DELEGATION_WILAYA_MAP.items() if k == v}
 
-        # Passe 1 : vraies délégations (le plus long d'abord pour "منزل بورقيبة" > "منزل")
+        # Passe 1 : vraies délégations (le plus long d'abord  doit être testé avant)
         # Passe 2 : capitales de wilaya
         for mapping in (true_delegations, wilaya_capitals):
             for deleg in sorted(mapping.keys(), key=len, reverse=True):
                 deleg_norm = self._normalize_ar(deleg)
-                if deleg_norm in text_norm:
-                    wilaya_found = mapping[deleg]
-                    old_wilaya   = entities.get("wilaya", "")
+                if deleg_norm in text_norm: # Vérifie présence dans texte
+                    wilaya_found = mapping[deleg] # Wilaya correspondante
+                    old_wilaya   = entities.get("wilaya", "") # Anciennes valeurs
                     old_deleg    = entities.get("delegation", "")
 
-                    entities["delegation"]        = deleg
+                    entities["delegation"]        = deleg # Mise à jour entités
                     entities["wilaya"]            = wilaya_found
-                    # Marqueur : localisation trouvée EXPLICITEMENT dans le texte
-                    # → utilisé par _update_entities pour ne pas écraser
+                   # Flag :   localisation explicitement dite par user
                     entities["location_explicit"] = True
 
-                    if old_wilaya != wilaya_found or old_deleg != deleg:
+                    if old_wilaya != wilaya_found or old_deleg != deleg: # Log correction
                         logger.info(
                             f"[NLU] Location corrigée depuis texte : "
                             f"délégation='{old_deleg}'→'{deleg}' "
                             f"wilaya='{old_wilaya}'→'{wilaya_found}'"
                         )
-                    return entities   # On s'arrête au premier match
-
-        # Aucune localisation explicite dans le texte → on marque False
-        # pour empêcher l'écrasement des valeurs accumulées correctes
-        entities["location_explicit"] = False
-        return entities
+                    return entities   # Stop dès premier match
+        entities["location_explicit"] = False # Aucune localisation trouvée False pour empêcher l'écrasement des valeurs accumulées correctes
+        return entities 
 
     # ─────────────────────────────────────────────────────────
-    # Utilitaires
+    # Utilitaires Fonctions secondaires utilisées dans tout le NLU
     # ─────────────────────────────────────────────────────────
-    def _normalize(self, text: str) -> str:
-        """Normalisation légère du darija.
-
-        - Retire la ponctuation usuelle (arabe + latine).
-        - Retire les diacritiques arabes (تشكيل) pour que شكراً ≡ شكرا.
-        - Normalise les variantes de alef (إ أ آ → ا).
-        - Normalise les ta marbouta finales (ة → ه) pour assouplir le matching.
-        - Collapse les espaces, trim, lowercase.
-        """
+    def _normalize(self, text: str) -> str: # NORMALISATION TEXTE rendre les comparaisons regex plus fiables.
         text = re.sub(r'[؟!،,\.\?\!\:\;\|]', ' ', text)
-        # Diacritiques arabes (fatha/damma/kasra/shadda/sukun/tanween/alef khanjariya)
-        text = re.sub(r'[\u064B-\u065F\u0670]', '', text)
-        # Normalisation alef + ta marbouta
+        text = re.sub(r'[\u064B-\u065F\u0670]', '', text) # Suppression diacritiques arabes
         text = re.sub(r'[إأآ]', 'ا', text)
         return re.sub(r'\s+', ' ', text).strip().lower()
 
-    def _extract_phone(self, text: str) -> str:
+    def _extract_phone(self, text: str) -> str: 
         """Extrait un numéro de téléphone tunisien (8 chiffres)."""
         match = re.search(r'\b([259]\d{7})\b', re.sub(r'\s', '', text))
         return match.group(1) if match else None

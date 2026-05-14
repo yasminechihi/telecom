@@ -1,23 +1,35 @@
-#!/usr/bin/env python3
 # ============================================================
-#  user_app.py — Interface Espace Client Tunisie Telecom
-#  Flask app séparée (port 5001) — Ne touche PAS à app.py
-#
 #  Fonctionnalités :
 #    - Authentification : Sign In / Sign Up (Supabase)
-#    - Chat avec le bot (même logique que app.py, sans détails NLU)
+#    - Chat avec le bot 
 #    - Dashboard : historique des réclamations par client
-#    - Design Tunisie Telecom (violet, blanc)
+#    - Design Tunisie Telecom 
 #    - Transfert vers agent humain via Asterisk AMI (WSL)
 # ============================================================
-
 import os, sys, json, uuid, logging, re, types, importlib.util
 import io, asyncio, tempfile
 from datetime import datetime
 from functools import wraps
-
-from flask import (Flask, request, jsonify, render_template,
-                   session, redirect, url_for, flash, send_file)
+# sys = "system" = outils liés à Python lui-même Ex: sys.path = liste des endroits où Python cherche les modules
+# uuid = "Universally Unique Identifier" Génère des identifiants uniques . Chaque conversation reçoit un ID unique comme ça
+# re = "regular expressions" = outil pour chercher des patterns dans du texte . Ex: détecter si un texte contient un numéro de téléphone
+# types = outils avancés pour créer des objets Python dynamiquement . Utilisé ici pour créer un module Python "à la volée"
+# importlib = outils pour charger des fichiers Python manuellement.  Utilisé pour contourner le chargement automatique normal
+# io = "input/output" = outils pour gérer des flux de données. Ex: tenir en mémoire un fichier audio sans le sauvegarder sur disque
+# asyncio = outil pour faire plusieurs choses "en même temps" en Python. Utilisé pour la génération audio (TTS) qui est asynchrone
+# tempfile = crée des fichiers temporaires sur le disque. Ex: sauvegarder un audio temporairement avant de l'envoyer
+# wraps = outil technique pour créer des "décorateurs" proprement. Un décorateur = une fonction qui enveloppe une autre fonction . Ici utilisé pour le système "login_required" (vérifier que l'utilisateur est connecté)
+from flask import (
+    Flask,           # Flask = la boîte principale qui crée l'application web
+    request,         # request = l'objet qui contient ce que l'utilisateur a envoyé (formulaire, JSON, etc.)
+    jsonify,         # jsonify = convertit un dictionnaire Python en réponse JSON (pour l'app mobile)
+    render_template, # render_template = affiche une page HTML (pour le navigateur web)
+    session,         # session = mémoire temporaire liée à l'utilisateur connecté (comme un cookie)
+    redirect,        # redirect = redirige l'utilisateur vers une autre page
+    url_for,         # url_for = génère l'URL d'une page à partir de son nom de fonction
+    flash,           # flash = affiche un message temporaire (ex: "Connexion réussie !")
+    send_file        # send_file = envoie un fichier au client (ex: fichier audio MP3)
+)
 from werkzeug.security import generate_password_hash, check_password_hash
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -26,7 +38,6 @@ import config as Config
 
 # ══════════════════════════════════════════════════════════
 #  Import direct des modules bot (bypass modules/__init__.py)
-#  ──────────────────────────────────────────────────────────
 #  modules/__init__.py importe STTModule (sounddevice, numpy audio)
 #  et TTSModule qui ne sont PAS nécessaires pour l'interface texte.
 #  On charge uniquement les 4 modules utiles via importlib.
@@ -232,18 +243,6 @@ INTENT_TO_ACTION: dict = {
     "تغيير الخدمة":              "تحويل نوع الخدمة",
     "عطب في الجهاز":             "تبديل المودم",
     "استفسار عن التغطية":        "تثبت من تغطية الفيبر",
-    # ── Graphie INTENT_PATTERNS NLU (fallback regex, avec ه) ─
-    "عطل في الشبكه":             "تثبت من حالة الشبكة",
-    "بطء في الانترنت":           "اختبار سرعة التدفق",
-    "انقطاع الانترنت":           "تشخيص تقني",
-    "مشكله في اشاره الويفي":     "تقديم نصيحة تقنية",
-    "مشكله في الدفع":            "إعادة تفعيل الخط",
-    "اعتراض على الفاتوره":       "استخراج تفاصيل الفاتورة",
-    "مشكله في الجوال":           "تثبت من حالة التجوال",
-    "تاخير في التركيب":          "متابعة حالة الطلب",
-    "تبديل شريحه":               "مد الحريف بموقع فرع",
-    "تغيير الخدمه":              "تحويل نوع الخدمة",
-    "استفسار عن التغطيه":        "تثبت من تغطية الفيبر",
 }
 
 # Table normalisée (ة→ه, أإآ→ا) pour lookup tolérant aux variantes orthographiques
@@ -260,7 +259,6 @@ _INTENT_ACTION_NORM: dict = {_norm_intent_key(k): v for k, v in INTENT_TO_ACTION
 _NO_TRANSFER_INTENTS_NORM: frozenset = frozenset(
     _norm_intent_key(k) for k in {
         "استفسار عن التغطية",   # Couverture fibre → réponse informative directe
-        "استفسار عن التغطيه",
     }
 )
 
@@ -276,15 +274,10 @@ def _is_no_transfer_intent(intent: str) -> bool:
 _ASK_NUMBER_INTENTS_NORM: frozenset = frozenset(
     _norm_intent_key(k) for k in {
         "مشكلة في الدفع",
-        "مشكله في الدفع",
         "اعتراض على الفاتورة",
-        "اعتراض على الفاتوره",
         "انقطاع الانترنات",
-        "انقطاع الانترنت",
         "تأخير في التركيب",
-        "تاخير في التركيب",
         "مشكلة في التجوال",
-        "مشكله في التجوال",
     }
 )
 
@@ -324,20 +317,14 @@ def _resolve_intent(stored: str, fallback: str) -> str:
 _INTENT_CLARI_FALLBACK: dict = {
     # ── مشكلة في الدفع ─────────────────────────────────────────────────
     "مشكلة في الدفع":      "عندك رقم المعاملة (numéro de transaction)؟",
-    "مشكله في الدفع":      "عندك رقم المعاملة (numéro de transaction)؟",
     # ── اعتراض على الفاتورة ────────────────────────────────────────────
     "اعتراض على الفاتورة": "تحب نثبتولك في ديتاي الاستهلاك؟",
-    "اعتراض على الفاتوره": "تحب نثبتولك في ديتاي الاستهلاك؟",
     # ── انقطاع الانترنات ───────────────────────────────────────────────
     "انقطاع الانترنات":    "ثبتلي بربي في الموديم يشعل بالأحمر؟",
-    "انقطاع الانترنت":     "ثبتلي بربي في الموديم يشعل بالأحمر؟",
     # ── تأخير في التركيب ───────────────────────────────────────────────
     "تأخير في التركيب":    "عندك رقم المطلب (numéro de demande)؟",
-    "تاخير في التركيب":    "عندك رقم المطلب (numéro de demande)؟",
     # ── مشكلة في التجوال ───────────────────────────────────────────────
     "مشكلة في التجوال":    "ثبت اللي الـ Données en itinérance مفعّلة في تليفونك؟",
-    "مشكله في التجوال":    "ثبت اللي الـ Données en itinérance مفعّلة في تليفونك؟",
-    "مشكله في الجوال":     "ثبت اللي الـ Données en itinérance مفعّلة في تليفونك؟",
 }
 
 
